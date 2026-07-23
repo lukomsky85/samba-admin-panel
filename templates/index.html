@@ -45,7 +45,17 @@
     color: var(--fg);
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
     transition: background-color 0.35s ease, color 0.35s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--fg-dim) #060907;
   }
+  * { scrollbar-width: thin; scrollbar-color: var(--fg-dim) #060907; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: #060907; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--fg-dim); border: 1px solid #060907; border-radius: 0;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg); }
+  ::-webkit-scrollbar-corner { background: #060907; }
   body::before {
     content: "";
     position: fixed; inset: 0; z-index: 999; pointer-events: none;
@@ -63,8 +73,8 @@
   header a { color: var(--fg-dim); font-size: 12px; text-decoration: none; }
   header a:hover { color: var(--red); }
 
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .grid { column-count: 2; column-gap: 18px; }
+  @media (max-width: 760px) { .grid { column-count: 1; } }
 
   .summary-bar {
     display: flex; gap: 0; margin-bottom: 22px;
@@ -88,7 +98,7 @@
   .tab-btn:hover { border-color: var(--fg); color: var(--fg); }
   .tab-btn.tab-active { border-color: var(--fg); color: var(--fg); background: rgba(57,255,106,0.08); }
   .tab-content { display: none; }
-  .tab-content.tab-content-active { display: grid; animation: tabFadeIn 0.3s ease; }
+  .tab-content.tab-content-active { display: block; animation: tabFadeIn 0.3s ease; }
   @keyframes tabFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
   .live-dot {
@@ -98,7 +108,11 @@
   .live-dot.live-on { background: var(--fg); animation: livepulse 1.4s ease-in-out infinite; }
   @keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-  .panel { border: 1px solid var(--fg-dim); background: var(--panel); padding: 16px 18px; transition: background-color 0.35s ease, border-color 0.35s ease; }
+  .panel {
+    border: 1px solid var(--fg-dim); background: var(--panel); padding: 16px 18px;
+    transition: background-color 0.35s ease, border-color 0.35s ease;
+    break-inside: avoid; margin-bottom: 18px; display: block;
+  }
   .panel h2 { font-size: 12px; color: var(--fg-dim); margin: 0 0 14px; letter-spacing: 1px; text-transform: uppercase; transition: color 0.35s ease; }
 
   label { display: block; font-size: 11px; color: var(--fg-dim); margin-bottom: 4px; transition: color 0.35s ease; }
@@ -109,6 +123,23 @@
     transition: border-color 0.18s ease, color 0.35s ease, box-shadow 0.18s ease;
   }
   input:focus, select:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg) inset; }
+
+  input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    width: 16px; height: 16px; min-width: 16px;
+    background: #060907; border: 1px solid var(--fg-dim);
+    padding: 0; margin: 0; position: relative; cursor: pointer; flex-shrink: 0;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  input[type="checkbox"]:hover { border-color: var(--fg); }
+  input[type="checkbox"]:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
+  input[type="checkbox"]:checked { background: var(--fg); border-color: var(--fg); }
+  input[type="checkbox"]:checked::after {
+    content: "✓";
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; line-height: 1; color: #05100a; font-weight: bold;
+  }
   button {
     background: transparent; border: 1px solid var(--fg);
     color: var(--fg); font-family: inherit; font-size: 12px; padding: 8px 14px;
@@ -132,7 +163,7 @@
   .theme-dot:hover { transform: scale(1.15); }
   .theme-dot.theme-active { border-color: #fff; border-width: 2px; }
 
-  .userlist { grid-column: 1 / -1; }
+  .userlist { column-span: all; }
   .userline {
     display: flex; justify-content: space-between; align-items: center;
     padding: 6px 0; border-bottom: 1px dashed #163a22; font-size: 13px;
@@ -167,6 +198,21 @@
   }
   .output-box .line-fail { color: var(--red); }
   .output-box.just-updated { box-shadow: 0 0 0 1px var(--fg) inset; }
+
+  .ad-user-picker {
+    max-height: 220px; overflow-y: auto; border: 1px solid var(--fg-dim);
+    background: #060907;
+  }
+  .ad-user-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; cursor: pointer; font-size: 13px;
+    border-bottom: 1px dashed #163a22; transition: background-color 0.12s ease;
+  }
+  .ad-user-row:last-child { border-bottom: none; }
+  .ad-user-row:hover { background: rgba(57,255,106,0.08); }
+  .ad-user-row.ad-user-selected { background: rgba(57,255,106,0.16); }
+  .ad-user-row input[type="checkbox"] { margin: 0; flex-shrink: 0; pointer-events: none; }
+  .ad-user-row.ad-user-hidden { display: none; }
 
   .disk-row {
     display: flex; flex-direction: column; gap: 4px;
@@ -238,6 +284,7 @@
     <button class="tab-btn tab-active" id="tabbtn-shares" onclick="showTab('shares')">[ Шары и пользователи ]</button>
     <button class="tab-btn" id="tabbtn-disks" onclick="showTab('disks')">[ Диски ]</button>
     <button class="tab-btn" id="tabbtn-monitor" onclick="showTab('monitor')">[ Мониторинг ]</button>
+    <button class="tab-btn" id="tabbtn-ad" onclick="showTab('ad')">[ Active Directory ]</button>
   </div>
 
   <div class="grid tab-content tab-content-active" id="tab-shares">
@@ -269,31 +316,59 @@
         <button type="button" onclick="openDirBrowser()" style="flex-shrink:0;">[ обзор ]</button>
       </div>
       <p class="modal-sub" style="margin:0 0 12px;">Не уверен, что писать? Подставится само по имени шары (обычно <code>/srv/имя-шары</code>) — можно так и оставить. Папки не существует — не страшно, она создастся сама. Кнопка «обзор» покажет реальные папки на сервере, чтобы не гадать вслепую.</p>
-      <label for="share-group">группа с доступом</label>
-      <input id="share-group" placeholder="sharegroup" value="sharegroup">
+      <label for="share-access-type">тип доступа</label>
+      <select id="share-access-type" onchange="onAccessTypeChange('share')">
+        <option value="local">Локальная Unix-группа</option>
+        <option value="ad_group">Группа Active Directory</option>
+        <option value="ad_users">Конкретные пользователи AD</option>
+      </select>
+
+      <div id="share-access-local-block">
+        <label for="share-group">группа с доступом</label>
+        <input id="share-group" placeholder="sharegroup" value="sharegroup">
+      </div>
+
+      <div id="share-access-adgroup-block" style="display:none;">
+        <label for="share-adgroup-select">группа AD</label>
+        <select id="share-adgroup-select"><option value="">жми «обновить список» ниже</option></select>
+        <div class="row" style="margin:4px 0 12px;">
+          <button type="button" onclick="loadAdGroupsInto('share-adgroup-select')">[ обновить список групп AD ]</button>
+        </div>
+      </div>
+
+      <div id="share-access-adusers-block" style="display:none;">
+        <label for="share-adusers-filter">пользователи AD</label>
+        <input id="share-adusers-filter" placeholder="фильтр по имени..." oninput="filterAdUserPicker('share')">
+        <div class="ad-user-picker" id="share-adusers-list"><span class="badge-off">жми «обновить список» ниже</span></div>
+        <p class="modal-sub" id="share-adusers-count" style="margin:4px 0 10px;">выбрано: 0</p>
+        <div class="row" style="margin-bottom:12px;">
+          <button type="button" onclick="loadAdUsersInto('share')">[ обновить список пользователей AD ]</button>
+        </div>
+      </div>
+
       <label for="share-hosts">разрешённые IP/подсети (через запятую, пусто = все)</label>
       <input id="share-hosts" placeholder="192.168.1.0/24, 10.0.0.5">
       <label for="share-veto">запретить запись файлов с расширениями (через запятую, пусто = без ограничений)</label>
       <input id="share-veto" placeholder="exe, bat, cmd, scr, vbs, msi, ps1">
       <div class="row" style="margin-bottom:12px;">
-        <label style="margin:0;"><input type="checkbox" id="share-recycle" style="width:auto; margin:0;"> включить корзину для удалённых файлов</label>
+        <label style="margin:0;"><input type="checkbox" id="share-recycle" style="margin:0;"> включить корзину для удалённых файлов</label>
       </div>
       <label for="share-retention">хранить в корзине дней (0 = навсегда, чистить только руками)</label>
       <input id="share-retention" type="number" min="0" max="9999" value="0" placeholder="0">
       <div class="row" style="margin-bottom:12px;">
-        <label style="margin:0;"><input type="checkbox" id="share-antivirus" style="width:auto; margin:0;"> сканировать файлы антивирусом (ClamAV)</label>
+        <label style="margin:0;"><input type="checkbox" id="share-antivirus" style="margin:0;"> сканировать файлы антивирусом (ClamAV)</label>
       </div>
       <label for="share-quota">квота — предупреждение при превышении (ГБ, 0 = без лимита)</label>
       <input id="share-quota" type="number" min="0" step="0.1" value="0" placeholder="0">
       <div class="row" style="margin-bottom:12px;">
-        <label style="margin:0;"><input type="checkbox" id="share-backup" style="width:auto; margin:0;"> включить бэкап по расписанию</label>
+        <label style="margin:0;"><input type="checkbox" id="share-backup" style="margin:0;"> включить бэкап по расписанию</label>
       </div>
       <div class="row" style="margin-bottom:4px;">
-        <label style="margin:0;"><input type="checkbox" id="share-full-audit" style="width:auto; margin:0;"> полный аудит файловых операций (шумно!)</label>
+        <label style="margin:0;"><input type="checkbox" id="share-full-audit" style="margin:0;"> полный аудит файловых операций (шумно!)</label>
       </div>
       <p class="modal-sub" style="margin:0 0 12px;">Кто открыл/удалил/переименовал файл — не только действия через панель. Пишется в syslog, требует настроенного rsyslog (делает install.sh).</p>
       <div class="row" style="margin-bottom:12px;">
-        <label style="margin:0;"><input type="checkbox" id="share-writable" checked style="width:auto; margin:0;"> разрешить запись</label>
+        <label style="margin:0;"><input type="checkbox" id="share-writable" checked style="margin:0;"> разрешить запись</label>
       </div>
       <button onclick="createShare()">[ создать шару ]</button>
     </div>
@@ -351,7 +426,7 @@
         <span style="font-size:12px; color:var(--fg-dim);">
           <span class="live-dot" id="live-dot"></span>автообновление каждые 5 сек
         </span>
-        <label style="margin:0; font-size:12px;"><input type="checkbox" id="monitor-autorefresh" checked style="width:auto; margin:0 6px 0 0;" onchange="onAutoRefreshToggle()">включено</label>
+        <label style="margin:0; font-size:12px;"><input type="checkbox" id="monitor-autorefresh" checked style="margin:0 6px 0 0;" onchange="onAutoRefreshToggle()">включено</label>
       </div>
     </div>
 
@@ -390,9 +465,9 @@
         </div>
         <div>
           <label for="smtp-from">адрес отправителя (from)</label>
-          <input id="smtp-from" placeholder="mail@domen.ru">
+          <input id="smtp-from" placeholder="mikhail@lukomsky.ru">
           <label for="smtp-user">логин (обычно тот же адрес)</label>
-          <input id="smtp-user" placeholder="mail@domen.ru">
+          <input id="smtp-user" placeholder="mikhail@lukomsky.ru">
         </div>
       </div>
       <label for="smtp-password" id="smtp-password-label">пароль (или пароль приложения для Gmail/Яндекса)</label>
@@ -434,6 +509,79 @@
       </div>
       <div class="row" style="margin-top:10px;">
         <button onclick="refreshFileAuditLog()">[ обновить сейчас ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-ad">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Статус Active Directory</h2>
+      <div id="ad-status-body">
+        <p class="badge-off">загрузка...</p>
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="refreshAdStatus()">[ обновить статус ]</button>
+        <button onclick="refreshAdTest()">[ проверить соединение (testjoin/wbinfo) ]</button>
+      </div>
+      <div class="output-box" id="ad-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;" id="ad-join-panel">
+      <h2>Присоединить сервер к домену</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">
+        Присоединение как member server (через <code>winbind</code>), а не контроллер домена. Текущие локальные пользователи и шары не трогаются — это второй, независимый способ входа, поверх уже работающего. Пароль администратора домена нигде не сохраняется, используется только один раз для самого присоединения.
+      </p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="ad-workgroup">Домен (NetBIOS/workgroup)</label>
+          <input id="ad-workgroup" placeholder="EXAMPLE">
+          <label for="ad-realm">Realm</label>
+          <input id="ad-realm" placeholder="EXAMPLE.COM">
+        </div>
+        <div>
+          <label for="ad-range-start">idmap-диапазон, от</label>
+          <input id="ad-range-start" placeholder="10000" value="10000">
+          <label for="ad-range-end">idmap-диапазон, до</label>
+          <input id="ad-range-end" placeholder="999999" value="999999">
+        </div>
+      </div>
+      <label for="ad-admin-user">Администратор домена</label>
+      <input id="ad-admin-user" placeholder="administrator">
+      <label for="ad-admin-password">Пароль администратора (не сохраняется)</label>
+      <input id="ad-admin-password" type="password" placeholder="">
+      <p class="modal-sub" style="margin:0 0 10px;">
+        Перед присоединением убедись, что DNS этого сервера указывает на DNS-сервер AD (иначе домен не найдётся), и что время на сервере синхронизировано с контроллером домена (Kerberos не работает при рассинхронизации часов больше 5 минут).
+      </p>
+      <button onclick="joinAd()">[ присоединить к домену ]</button>
+    </div>
+
+    <div class="panel userlist" id="ad-leave-panel" style="grid-column: 1 / -1; display:none;">
+      <h2>Выйти из домена</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Убирает AD-конфигурацию из <code>smb.conf</code> и снимает компьютерную учётку сервера в AD. Локальные пользователи и шары не затрагиваются. <code>/etc/krb5.conf</code> и запись <code>winbind</code> в <code>/etc/nsswitch.conf</code> намеренно не откатываются автоматически.</p>
+      <label for="ad-leave-admin-user">Администратор домена</label>
+      <input id="ad-leave-admin-user" placeholder="administrator">
+      <label for="ad-leave-admin-password">Пароль администратора</label>
+      <input id="ad-leave-admin-password" type="password" placeholder="">
+      <button class="danger" onclick="leaveAd()">[ выйти из домена ]</button>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Пользователи AD</h2>
+      <div class="output-box" id="ad-users-output">
+        <span class="badge-off">жми «обновить», чтобы загрузить список (только после присоединения)</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdUsers()">[ обновить ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Группы AD</h2>
+      <div class="output-box" id="ad-groups-output">
+        <span class="badge-off">жми «обновить», чтобы загрузить список (только после присоединения)</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdGroups()">[ обновить ]</button>
       </div>
     </div>
   </div>
@@ -480,7 +628,7 @@
       <p class="modal-title">$ set_share_recycle <span id="recycle-modal-sharename"></span></p>
       <p class="modal-sub">Удалённые через шару файлы будут перемещаться в скрытую папку .recycle вместо безвозвратного удаления.</p>
       <div class="row" style="margin-bottom:14px;">
-        <label style="margin:0;"><input type="checkbox" id="recycle-modal-enabled" style="width:auto; margin:0;" onchange="document.getElementById('recycle-modal-retention-row').style.display=this.checked?'block':'none'"> включить корзину</label>
+        <label style="margin:0;"><input type="checkbox" id="recycle-modal-enabled" style="margin:0;" onchange="document.getElementById('recycle-modal-retention-row').style.display=this.checked?'block':'none'"> включить корзину</label>
       </div>
       <div id="recycle-modal-retention-row">
         <label for="recycle-modal-retention">хранить дней (0 = навсегда, чистить только руками)</label>
@@ -498,7 +646,7 @@
       <p class="modal-title">$ set_share_quota <span id="quota-modal-sharename"></span></p>
       <p class="modal-sub">Квота мониторинговая — панель подсветит превышение в «Место на диске», но физически ничто не мешает записать больше (Samba не умеет ограничивать объём без реальных ФС-квот).</p>
       <div class="row" style="margin-bottom:14px;">
-        <label style="margin:0;"><input type="checkbox" id="quota-modal-enabled" style="width:auto; margin:0;" onchange="document.getElementById('quota-modal-value-row').style.display=this.checked?'block':'none'"> задать квоту</label>
+        <label style="margin:0;"><input type="checkbox" id="quota-modal-enabled" style="margin:0;" onchange="document.getElementById('quota-modal-value-row').style.display=this.checked?'block':'none'"> задать квоту</label>
       </div>
       <div id="quota-modal-value-row">
         <label for="quota-modal-value">лимит, ГБ</label>
@@ -531,7 +679,7 @@
       <label for="mount-modal-path">точка монтирования</label>
       <input id="mount-modal-path" placeholder="/mnt/backup">
       <div class="row" style="margin: 4px 0 14px;">
-        <label style="margin:0;"><input type="checkbox" id="mount-modal-persistent" style="width:auto; margin:0;"> подключать автоматически при загрузке (запись в /etc/fstab по UUID)</label>
+        <label style="margin:0;"><input type="checkbox" id="mount-modal-persistent" style="margin:0;"> подключать автоматически при загрузке (запись в /etc/fstab по UUID)</label>
       </div>
       <div class="modal-actions">
         <button onclick="closeMountModal()">[ отмена ]</button>
@@ -550,6 +698,48 @@
       <div class="modal-actions">
         <button onclick="closeDirBrowser()">[ отмена ]</button>
         <button onclick="selectDirBrowserPath()">[ выбрать эту папку ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="group-modal-overlay" onclick="if(event.target===this)closeGroupModal()">
+    <div class="modal-box" style="width:min(480px, 92vw);">
+      <p class="modal-title">$ set_share_group <span id="group-modal-sharename"></span></p>
+      <p class="modal-sub">Можно переключить между обычной локальной группой и доступом через Active Directory в любой момент, не пересоздавая шару.</p>
+
+      <label for="group-modal-access-type">тип доступа</label>
+      <select id="group-modal-access-type" onchange="onAccessTypeChange('group-modal')">
+        <option value="local">Локальная Unix-группа</option>
+        <option value="ad_group">Группа Active Directory</option>
+        <option value="ad_users">Конкретные пользователи AD</option>
+      </select>
+
+      <div id="group-modal-access-local-block">
+        <label for="group-modal-group">имя группы</label>
+        <input id="group-modal-group" placeholder="sharegroup">
+      </div>
+
+      <div id="group-modal-access-adgroup-block" style="display:none;">
+        <label for="group-modal-adgroup-select">группа AD</label>
+        <select id="group-modal-adgroup-select"><option value="">жми «обновить список» ниже</option></select>
+        <div class="row" style="margin:4px 0 12px;">
+          <button type="button" onclick="loadAdGroupsInto('group-modal-adgroup-select')">[ обновить список групп AD ]</button>
+        </div>
+      </div>
+
+      <div id="group-modal-access-adusers-block" style="display:none;">
+        <label for="group-modal-adusers-filter">пользователи AD</label>
+        <input id="group-modal-adusers-filter" placeholder="фильтр по имени..." oninput="filterAdUserPicker('group-modal')">
+        <div class="ad-user-picker" id="group-modal-adusers-list"><span class="badge-off">жми «обновить список» ниже</span></div>
+        <p class="modal-sub" id="group-modal-adusers-count" style="margin:4px 0 10px;">выбрано: 0</p>
+        <div class="row" style="margin-bottom:12px;">
+          <button type="button" onclick="loadAdUsersInto('group-modal')">[ обновить список пользователей AD ]</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button onclick="closeGroupModal()">[ отмена ]</button>
+        <button onclick="saveGroupModal()">[ сохранить ]</button>
       </div>
     </div>
   </div>
@@ -707,7 +897,7 @@ function selectDirBrowserPath() {
 async function createShare() {
   const name = document.getElementById('share-name').value.trim();
   const path = document.getElementById('share-path').value.trim();
-  const group = document.getElementById('share-group').value.trim() || 'sharegroup';
+  const group = computeGroupValue('share');
   const hosts = document.getElementById('share-hosts').value.trim() || 'ALL';
   const veto = document.getElementById('share-veto').value.trim() || 'NONE';
   const recycle = document.getElementById('share-recycle').checked;
@@ -718,6 +908,7 @@ async function createShare() {
   const full_audit = document.getElementById('share-full-audit').checked;
   const writable = document.getElementById('share-writable').checked;
   if (!name || !path) { logLine('ERROR: укажи имя шары и путь', 'line-err'); return; }
+  if (!group) { logLine('ERROR: укажи группу/AD-группу/AD-пользователей для доступа', 'line-err'); return; }
   const data = await post('/api/create_share', {name, path, group, writable, hosts, veto, recycle, retention_days, antivirus, quota_bytes, backup, full_audit});
   renderOutput('create_share ' + name + ' ' + path, data);
   if (data.ok) {
@@ -732,6 +923,9 @@ async function createShare() {
     document.getElementById('share-quota').value = '0';
     document.getElementById('share-backup').checked = false;
     document.getElementById('share-full-audit').checked = false;
+    document.getElementById('share-access-type').value = 'local';
+    adUserSelections['share'] = new Set();
+    onAccessTypeChange('share');
     refreshShares();
   }
 }
@@ -1076,15 +1270,25 @@ async function refreshShares() {
         : ' · бэкап: включён, ещё не запускался';
     }
     const auditLabel = auditOn ? ' · полный аудит: вкл' : '';
+    let groupLabel;
+    if (group.startsWith('AD:')) {
+      groupLabel = 'AD-группа: ' + group.slice(3);
+    } else if (group.startsWith('ADUSERS:')) {
+      groupLabel = 'AD-пользователи: ' + group.slice(8).split(',').join(', ');
+    } else {
+      groupLabel = group;
+    }
+    const groupB64 = btoa(unescape(encodeURIComponent(group)));
     const div = document.createElement('div');
     div.className = 'userline row-in';
     div.dataset.filterName = name.toLowerCase();
     div.innerHTML = `
       <span class="${status.includes('ПАПКА') ? 'badge-off' : 'badge-on'}">
-        ● ${name} <span style="color:var(--fg-dim)">${path} · ${group} · ${status}${restrictedIp ? ' · доступ: ' + hosts : ''}${restrictedVeto ? ' · запрещены: ' + veto : ''}${recycleLabel}${avLabel}${quotaLabel}${backupLabel}${auditLabel}</span>
+        ● ${name} <span style="color:var(--fg-dim)">${path} · ${escapeHtml(groupLabel)} · ${status}${restrictedIp ? ' · доступ: ' + hosts : ''}${restrictedVeto ? ' · запрещены: ' + veto : ''}${recycleLabel}${avLabel}${quotaLabel}${backupLabel}${auditLabel}</span>
       </span>
       <span class="actions">
         <button onclick="toggleWritable('${name}', ${!isWritable})">${isWritable ? 'read-only' : 'разрешить запись'}</button>
+        <button onclick="openGroupModal('${name}', '${groupB64}')">изменить группу доступа</button>
         <button onclick="editHosts('${name}', '${hosts}')">${restrictedIp ? 'изменить IP' : 'ограничить по IP'}</button>
         <button onclick="editVeto('${name}', '${veto}')">${restrictedVeto ? 'изменить типы файлов' : 'запретить типы файлов'}</button>
         <button onclick="editRecycle('${name}', ${recycleOn}, ${retention})">${recycleOn ? 'настройки корзины' : 'включить корзину'}</button>
@@ -1255,6 +1459,286 @@ async function testSmtpSend() {
     ? escapeHtml(data.output || 'OK')
     : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
   renderOutput('test_smtp_send ' + email, data);
+}
+
+async function refreshAdStatus() {
+  const body = document.getElementById('ad-status-body');
+  body.innerHTML = '<p class="badge-off">загрузка...</p>';
+  const res = await fetch('/api/ad_status');
+  const data = await res.json();
+  const line = (data.output || '').split('\n').find(l => l.trim().startsWith('ADSTATUS|'));
+  const joinPanel = document.getElementById('ad-join-panel');
+  const leavePanel = document.getElementById('ad-leave-panel');
+  if (!line) {
+    body.innerHTML = '<p class="line-fail">не удалось получить статус</p>';
+    return;
+  }
+  const parts = line.trim().split('|');
+  const [, configured, joined, wgB64, rlB64] = parts;
+  const wg = wgB64 ? b64DecodeUtf8(wgB64) : '';
+  const rl = rlB64 ? b64DecodeUtf8(rlB64) : '';
+
+  if (joined === 'yes') {
+    body.innerHTML = `<p class="badge-on">● присоединён к домену <b>${escapeHtml(rl)}</b> (workgroup ${escapeHtml(wg)})</p>`;
+    joinPanel.style.display = 'none';
+    leavePanel.style.display = 'block';
+  } else if (configured === 'yes') {
+    body.innerHTML = `<p class="line-fail">● AD настроен в smb.conf (${escapeHtml(rl)}), но testjoin не подтверждает — проверь соединение кнопкой ниже</p>`;
+    joinPanel.style.display = 'none';
+    leavePanel.style.display = 'block';
+  } else {
+    body.innerHTML = '<p class="badge-off">○ AD не настроен — сервер работает как обычно, локальные пользователи и шары не затронуты</p>';
+    joinPanel.style.display = 'block';
+    leavePanel.style.display = 'none';
+  }
+}
+
+async function refreshAdTest() {
+  const box = document.getElementById('ad-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">проверяю...</span>';
+  const res = await fetch('/api/ad_test');
+  const data = await res.json();
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || '')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('ad_test', data);
+}
+
+async function joinAd() {
+  const workgroup = document.getElementById('ad-workgroup').value.trim();
+  const realm = document.getElementById('ad-realm').value.trim();
+  const range_start = document.getElementById('ad-range-start').value.trim() || '10000';
+  const range_end = document.getElementById('ad-range-end').value.trim() || '999999';
+  const admin_user = document.getElementById('ad-admin-user').value.trim();
+  const admin_password = document.getElementById('ad-admin-password').value;
+
+  if (!workgroup || !realm || !admin_user || !admin_password) {
+    logLine('ERROR: заполни домен, realm, администратора и пароль', 'line-err');
+    return;
+  }
+  if (!confirm('Присоединить этот сервер к домену ' + realm + '? Потребуется установка пакетов winbind/krb5, изменение smb.conf, nsswitch.conf и krb5.conf.')) return;
+
+  logLine('$ ad_join ' + workgroup + ' ' + realm + ' (выполняется, может занять минуту)...', 'line-cmd');
+  const data = await post('/api/ad_join', {workgroup, realm, range_start, range_end, admin_user, admin_password});
+  renderOutput('ad_join ' + workgroup + ' ' + realm, data);
+  document.getElementById('ad-admin-password').value = '';
+  if (data.ok) refreshAdStatus();
+}
+
+async function leaveAd() {
+  const admin_user = document.getElementById('ad-leave-admin-user').value.trim();
+  const admin_password = document.getElementById('ad-leave-admin-password').value;
+  if (!admin_user || !admin_password) {
+    logLine('ERROR: укажи администратора домена и пароль для выхода', 'line-err');
+    return;
+  }
+  if (!confirm('Выйти из домена? Локальные пользователи и шары не тронутся, но доступ AD-пользователей пропадёт.')) return;
+
+  const data = await post('/api/ad_leave', {admin_user, admin_password});
+  renderOutput('ad_leave ' + admin_user, data);
+  document.getElementById('ad-leave-admin-password').value = '';
+  if (data.ok) refreshAdStatus();
+}
+
+async function refreshAdUsers() {
+  const box = document.getElementById('ad-users-output');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_users');
+  const data = await res.json();
+  if (!data.ok) {
+    smoothBoxUpdate(box, `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADUSER|'));
+  if (lines.length === 0) {
+    smoothBoxUpdate(box, '<span class="badge-off">пользователей не найдено (или winbind ещё не готов)</span>');
+    return;
+  }
+  const names = lines.map(l => {
+    try { return b64DecodeUtf8(l.split('|')[1]); } catch (e) { return '?'; }
+  });
+  smoothBoxUpdate(box, escapeHtml(names.join('\n')));
+}
+
+async function refreshAdGroups() {
+  const box = document.getElementById('ad-groups-output');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_groups');
+  const data = await res.json();
+  if (!data.ok) {
+    smoothBoxUpdate(box, `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADGROUP|'));
+  if (lines.length === 0) {
+    smoothBoxUpdate(box, '<span class="badge-off">групп не найдено (или winbind ещё не готов)</span>');
+    return;
+  }
+  const names = lines.map(l => {
+    try { return b64DecodeUtf8(l.split('|')[1]); } catch (e) { return '?'; }
+  });
+  smoothBoxUpdate(box, escapeHtml(names.join('\n')));
+}
+
+// --- Общая логика выбора типа доступа к шаре (локальная группа / AD-группа /
+// AD-пользователи) — переиспользуется и формой создания шары, и модалкой
+// редактирования уже существующей. prefix — префикс id-шников ("share" или
+// "group-modal"), см. соответствующую разметку.
+
+function onAccessTypeChange(prefix) {
+  const type = document.getElementById(prefix + '-access-type').value;
+  document.getElementById(prefix + '-access-local-block').style.display = type === 'local' ? 'block' : 'none';
+  document.getElementById(prefix + '-access-adgroup-block').style.display = type === 'ad_group' ? 'block' : 'none';
+  document.getElementById(prefix + '-access-adusers-block').style.display = type === 'ad_users' ? 'block' : 'none';
+}
+
+function computeGroupValue(prefix) {
+  const type = document.getElementById(prefix + '-access-type').value;
+  if (type === 'local') {
+    return document.getElementById(prefix + '-group').value.trim() || 'sharegroup';
+  }
+  if (type === 'ad_group') {
+    const sel = document.getElementById(prefix + '-adgroup-select');
+    return sel.value ? 'AD:' + sel.value : '';
+  }
+  if (type === 'ad_users') {
+    const selected = Array.from(adUserSelections[prefix] || []);
+    return selected.length ? 'ADUSERS:' + selected.join(',') : '';
+  }
+  return '';
+}
+
+async function loadAdGroupsInto(selectId) {
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '<option value="">загрузка...</option>';
+  const res = await fetch('/api/ad_list_groups');
+  const data = await res.json();
+  if (!data.ok) {
+    sel.innerHTML = '<option value="">ошибка — сервер присоединён к AD?</option>';
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADGROUP|'));
+  sel.innerHTML = '';
+  lines.forEach(line => {
+    let name;
+    try { name = b64DecodeUtf8(line.split('|')[1]); } catch (e) { return; }
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if (sel.options.length === 0) sel.innerHTML = '<option value="">групп не найдено</option>';
+}
+
+// Хранилище выбранных AD-пользователей по префиксу ("share" — форма
+// создания, "group-modal" — редактирование существующей шары). Обычный
+// select multiple с Ctrl/Cmd-кликом неочевиден — вместо него список
+// строк-чекбоксов с поиском, клик по строке целиком переключает выбор.
+const adUserSelections = { 'share': new Set(), 'group-modal': new Set() };
+
+async function loadAdUsersInto(prefix) {
+  const box = document.getElementById(prefix + '-adusers-list');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_users');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<span class="line-fail">${escapeHtml(data.output || 'ошибка — сервер присоединён к AD?')}</span>`;
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADUSER|'));
+  if (lines.length === 0) {
+    box.innerHTML = '<span class="badge-off">пользователей не найдено</span>';
+    return;
+  }
+  box.innerHTML = '';
+  const selected = adUserSelections[prefix] || new Set();
+  lines.forEach(line => {
+    let name;
+    try { name = b64DecodeUtf8(line.split('|')[1]); } catch (e) { return; }
+    const row = document.createElement('div');
+    row.className = 'ad-user-row' + (selected.has(name) ? ' ad-user-selected' : '');
+    row.dataset.name = name.toLowerCase();
+    row.onclick = () => toggleAdUserSelection(prefix, name, row);
+    row.innerHTML = `<input type="checkbox" ${selected.has(name) ? 'checked' : ''}><span>${escapeHtml(name)}</span>`;
+    box.appendChild(row);
+  });
+  updateAdUserCount(prefix);
+}
+
+function toggleAdUserSelection(prefix, name, rowEl) {
+  const set = adUserSelections[prefix] || (adUserSelections[prefix] = new Set());
+  const checkbox = rowEl.querySelector('input[type="checkbox"]');
+  if (set.has(name)) {
+    set.delete(name);
+    rowEl.classList.remove('ad-user-selected');
+    checkbox.checked = false;
+  } else {
+    set.add(name);
+    rowEl.classList.add('ad-user-selected');
+    checkbox.checked = true;
+  }
+  updateAdUserCount(prefix);
+}
+
+function updateAdUserCount(prefix) {
+  const el = document.getElementById(prefix + '-adusers-count');
+  if (!el) return;
+  const n = (adUserSelections[prefix] || new Set()).size;
+  el.textContent = 'выбрано: ' + n;
+}
+
+function filterAdUserPicker(prefix) {
+  const q = document.getElementById(prefix + '-adusers-filter').value.trim().toLowerCase();
+  const box = document.getElementById(prefix + '-adusers-list');
+  box.querySelectorAll('.ad-user-row').forEach(row => {
+    const match = !q || (row.dataset.name || '').includes(q);
+    row.classList.toggle('ad-user-hidden', !match);
+  });
+}
+
+let groupModalState = { name: null };
+
+function openGroupModal(name, groupB64) {
+  let currentGroup;
+  try { currentGroup = b64DecodeUtf8(groupB64); } catch (e) { currentGroup = 'sharegroup'; }
+  groupModalState.name = name;
+  document.getElementById('group-modal-sharename').textContent = name;
+  let type = 'local', localValue = currentGroup;
+  if (currentGroup.startsWith('AD:')) { type = 'ad_group'; }
+  else if (currentGroup.startsWith('ADUSERS:')) { type = 'ad_users'; }
+  document.getElementById('group-modal-access-type').value = type;
+  document.getElementById('group-modal-group').value = type === 'local' ? localValue : 'sharegroup';
+  document.getElementById('group-modal-adusers-filter').value = '';
+  onAccessTypeChange('group-modal');
+  document.getElementById('group-modal-overlay').style.display = 'flex';
+  if (type === 'ad_group') {
+    loadAdGroupsInto('group-modal-adgroup-select').then(() => {
+      document.getElementById('group-modal-adgroup-select').value = currentGroup.slice(3);
+    });
+  } else if (type === 'ad_users') {
+    const preselect = currentGroup.slice(8).split(',').filter(v => v);
+    adUserSelections['group-modal'] = new Set(preselect);
+    loadAdUsersInto('group-modal');
+  } else {
+    adUserSelections['group-modal'] = new Set();
+  }
+}
+
+function closeGroupModal() {
+  document.getElementById('group-modal-overlay').style.display = 'none';
+}
+
+async function saveGroupModal() {
+  const name = groupModalState.name;
+  const group = computeGroupValue('group-modal');
+  if (!group) { logLine('ERROR: выбери группу/пользователей', 'line-err'); return; }
+  const data = await post('/api/set_share_group', {name, group});
+  renderOutput('set_share_group ' + name, data);
+  if (data.ok) {
+    closeGroupModal();
+    refreshShares();
+  }
 }
 
 async function refreshConnections() {
@@ -1519,6 +2003,10 @@ function showTab(tabName) {
     startMonitorAutoRefresh();
   } else {
     stopMonitorAutoRefresh();
+  }
+
+  if (tabName === 'ad') {
+    refreshAdStatus();
   }
 }
 

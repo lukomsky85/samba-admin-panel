@@ -62,7 +62,7 @@ if not ADMIN_PASSWORD:
 
 HELPER = "/usr/local/sbin/samba-admin-helper.sh"
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-SHARENAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,31}$")
+SHARENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 SHAREPATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 RESERVED_SHARE_NAMES = {"global", "homes", "printers", "print$", "netlogon", "profiles"}
 HOST_TOKEN_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$")
@@ -251,13 +251,39 @@ def index():
     return render_template("index.html", users_output=output)
 
 
+AD_GROUP_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$")
+
+
+def validate_share_group_field(group):
+    """Разрешает обычное локальное имя группы, 'AD:группа' или
+    'ADUSERS:user1,user2'. Возвращает (ok, normalized)."""
+    group = (group or "").strip()
+    if group.startswith("AD:"):
+        adg = group[3:].strip()
+        if not adg or not AD_GROUP_TOKEN_RE.match(adg):
+            return False, None
+        return True, f"AD:{adg}"
+    if group.startswith("ADUSERS:"):
+        adu = group[8:].strip()
+        tokens = [t.strip() for t in adu.split(",") if t.strip()]
+        if not tokens:
+            return False, None
+        for t in tokens:
+            if not AD_GROUP_TOKEN_RE.match(t):
+                return False, None
+        return True, "ADUSERS:" + ",".join(tokens)
+    if not USERNAME_RE.match(group):
+        return False, None
+    return True, group
+
+
 @app.route("/api/create_share", methods=["POST"])
 @login_required
 def api_create_share():
     data = request.get_json(force=True)
     name = (data.get("name") or "").strip()
     path = (data.get("path") or "").strip()
-    group = (data.get("group") or "sharegroup").strip()
+    group_ok, group = validate_share_group_field(data.get("group") or "sharegroup")
     writable = "yes" if data.get("writable", True) else "no"
     hosts_ok, hosts = validate_hosts_field(data.get("hosts"))
     veto_ok, veto = validate_veto_field(data.get("veto"))
@@ -272,8 +298,8 @@ def api_create_share():
         return jsonify(ok=False, output="ERROR: недопустимое или зарезервированное имя шары")
     if not SHAREPATH_RE.match(path) or ".." in path:
         return jsonify(ok=False, output="ERROR: недопустимый путь (нужен абсолютный путь без спецсимволов)")
-    if not USERNAME_RE.match(group):
-        return jsonify(ok=False, output="ERROR: недопустимое имя группы")
+    if not group_ok:
+        return jsonify(ok=False, output="ERROR: недопустимое имя группы/AD-группы/AD-пользователей")
     if not hosts_ok:
         return jsonify(ok=False, output="ERROR: список IP/подсетей некорректен (пример: 192.168.1.0/24,10.0.0.5)")
     if not veto_ok:
@@ -284,6 +310,22 @@ def api_create_share():
         return jsonify(ok=False, output="ERROR: квота должна быть числом байт от 0")
 
     ok, output = run_helper(["create_share", name, path, group, writable, hosts, veto, recycle, retention, antivirus, quota, backup, full_audit])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_share_group", methods=["POST"])
+@login_required
+def api_set_share_group():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    group_ok, group = validate_share_group_field(data.get("group") or "")
+
+    if not SHARENAME_RE.match(name):
+        return jsonify(ok=False, output="ERROR: недопустимое имя шары")
+    if not group_ok:
+        return jsonify(ok=False, output="ERROR: недопустимое имя группы/AD-группы/AD-пользователей")
+
+    ok, output = run_helper(["set_share_group", name, group])
     return jsonify(ok=ok, output=output)
 
 
@@ -585,6 +627,78 @@ def api_test_smtp_send():
 
     email_b64 = base64.b64encode(email.encode()).decode()
     ok, output = run_helper(["test_smtp_send", email_b64])
+    return jsonify(ok=ok, output=output)
+
+
+AD_ADMIN_USER_RE = re.compile(r"^[A-Za-z0-9_.@\\-]{1,128}$")
+
+
+@app.route("/api/ad_status")
+@login_required
+def api_ad_status():
+    ok, output = run_helper(["ad_status"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/ad_join", methods=["POST"])
+@login_required
+def api_ad_join():
+    data = request.get_json(force=True)
+    workgroup = (data.get("workgroup") or "").strip()
+    realm = (data.get("realm") or "").strip()
+    range_start = str(data.get("range_start") or "10000").strip()
+    range_end = str(data.get("range_end") or "999999").strip()
+    admin_user = (data.get("admin_user") or "").strip()
+    admin_password = data.get("admin_password") or ""
+
+    if not workgroup or not realm:
+        return jsonify(ok=False, output="ERROR: укажи домен (workgroup) и realm")
+    if not admin_user or not AD_ADMIN_USER_RE.match(admin_user):
+        return jsonify(ok=False, output="ERROR: недопустимое имя администратора домена")
+    if not admin_password:
+        return jsonify(ok=False, output="ERROR: укажи пароль администратора домена")
+
+    ok, output = run_helper(
+        ["ad_join", workgroup, realm, range_start, range_end, admin_user],
+        stdin_text=admin_password + "\n",
+    )
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/ad_leave", methods=["POST"])
+@login_required
+def api_ad_leave():
+    data = request.get_json(force=True)
+    admin_user = (data.get("admin_user") or "").strip()
+    admin_password = data.get("admin_password") or ""
+
+    if not admin_user or not AD_ADMIN_USER_RE.match(admin_user):
+        return jsonify(ok=False, output="ERROR: недопустимое имя администратора домена")
+    if not admin_password:
+        return jsonify(ok=False, output="ERROR: укажи пароль администратора домена")
+
+    ok, output = run_helper(["ad_leave", admin_user], stdin_text=admin_password + "\n")
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/ad_test")
+@login_required
+def api_ad_test():
+    ok, output = run_helper(["ad_test"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/ad_list_users")
+@login_required
+def api_ad_list_users():
+    ok, output = run_helper(["ad_list_users"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/ad_list_groups")
+@login_required
+def api_ad_list_groups():
+    ok, output = run_helper(["ad_list_groups"])
     return jsonify(ok=ok, output=output)
 
 

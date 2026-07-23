@@ -10,7 +10,7 @@ set -euo pipefail
 
 SHAREGROUP="sharegroup"
 USERNAME_RE='^[a-z][a-z0-9_-]{0,31}$'
-SHARENAME_RE='^[a-zA-Z][a-zA-Z0-9_-]{0,31}$'
+SHARENAME_RE='^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$'
 SHAREPATH_RE='^/[A-Za-z0-9_./-]+$'
 RESERVED_SHARE_NAMES="global homes printers print\$ netlogon profiles"
 # один токен списка hosts: IPv4 или IPv4/маска. Список токенов через запятую, либо слово ALL.
@@ -26,6 +26,12 @@ FILE_AUDIT_LOG="/var/log/samba-full-audit/full-audit.log"
 DEVICE_RE='^/dev/[a-zA-Z0-9/_-]+$'
 # точка монтирования: как путь шары, но отдельный список запрещённых системных путей
 MOUNTPATH_RE='^/[A-Za-z0-9_./-]+$'
+# NetBIOS-имя домена и realm: буквы/цифры/дефис/точка (realm обычно ВЕРХНИЙ РЕГИСТР)
+WORKGROUP_RE='^[A-Za-z0-9-]{1,15}$'
+REALM_RE='^[A-Za-z0-9.-]{1,255}$'
+SMB_CONF="/etc/samba/smb.conf"
+AD_MARKER_BEGIN="# --- BEGIN AD INTEGRATION (managed by samba-admin panel, do not edit between markers) ---"
+AD_MARKER_END="# --- END AD INTEGRATION ---"
 
 FORBIDDEN_PATHS="/ /etc /root /boot /bin /sbin /usr /var /home /proc /sys /dev /lib /lib64"
 
@@ -72,6 +78,46 @@ validate_share_path() {
             exit 1
         fi
     done
+}
+
+validate_share_group() {
+    # Три варианта значения:
+    #  - обычное имя  -> локальная Unix-группа (как раньше)
+    #  - "AD:группа" или "AD:ДОМЕН\группа" -> группа Active Directory
+    #    (резолвится через winbind/NSS, не создаётся через groupadd)
+    #  - "ADUSERS:user1,user2,..." -> конкретные пользователи AD напрямую,
+    #    без общей группы (валидны 'user' или 'ДОМЕН\user' для каждого)
+    # Пробелы в AD-именах намеренно не поддерживаются — избегаем возни с
+    # кавычками в smb.conf для строк с пробелами.
+    local g="$1"
+    if [[ "$g" == AD:* ]]; then
+        local adg="${g#AD:}"
+        if [[ -z "$adg" || ! "$adg" =~ ^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$ ]]; then
+            echo "ERROR: некорректное имя AD-группы (без пробелов; допустимо 'группа' или 'ДОМЕН\\группа')" >&2
+            exit 1
+        fi
+    elif [[ "$g" == ADUSERS:* ]]; then
+        local adu="${g#ADUSERS:}"
+        if [[ -z "$adu" ]]; then
+            echo "ERROR: не указан ни один AD-пользователь" >&2
+            exit 1
+        fi
+        local u
+        IFS=',' read -ra _ad_users_check <<< "$adu"
+        for u in "${_ad_users_check[@]}"; do
+            u="$(echo "$u" | xargs)"
+            if [[ -z "$u" || ! "$u" =~ ^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$ ]]; then
+                echo "ERROR: некорректное имя AD-пользователя '$u' (без пробелов)" >&2
+                exit 1
+            fi
+        done
+    else
+        if [[ ! "$g" =~ $USERNAME_RE ]]; then
+            echo "ERROR: некорректное имя локальной группы (получено: '$g')" >&2
+            exit 1
+        fi
+    fi
+    echo "$g"
 }
 
 validate_device() {
@@ -238,8 +284,21 @@ regenerate_conf() {
             echo "   browseable = yes"
             echo "   writable = $s_writable"
             echo "   guest ok = no"
-            echo "   valid users = @$s_group"
-            echo "   force group = $s_group"
+            # Тип группы закодирован префиксом в самом значении:
+            # "AD:группа" — группа Active Directory (резолвится через winbind),
+            # "ADUSERS:user1,user2" — конкретные пользователи AD без общей группы,
+            # без префикса — обычная локальная Unix-группа (как было раньше).
+            if [[ "$s_group" == AD:* ]]; then
+                ad_group="${s_group#AD:}"
+                echo "   valid users = @${ad_group}"
+                echo "   force group = ${ad_group}"
+            elif [[ "$s_group" == ADUSERS:* ]]; then
+                ad_users="${s_group#ADUSERS:}"
+                echo "   valid users = ${ad_users//,/, }"
+            else
+                echo "   valid users = @$s_group"
+                echo "   force group = $s_group"
+            fi
             echo "   create mask = 0664"
             echo "   directory mask = 2775"
             if [[ "${s_hosts^^}" != "ALL" ]]; then
@@ -433,6 +492,7 @@ case "$cmd" in
     name="${2:-}"; path="${3:-}"; group="${4:-$SHAREGROUP}"; writable="${5:-yes}"; hosts_raw="${6:-ALL}"; veto_raw="${7:-NONE}"; recycle_raw="${8:-no}"; retention_raw="${9:-0}"; av_raw="${10:-no}"; quota_raw="${11:-0}"; backup_raw="${12:-no}"; audit_raw="${13:-no}"
     validate_share_name "$name"
     validate_share_path "$path"
+    group="$(validate_share_group "$group")"
     hosts="$(validate_hosts "$hosts_raw")"
     veto="$(validate_veto "$veto_raw")"
     recycle="$(validate_recycle "$recycle_raw")"
@@ -457,24 +517,44 @@ case "$cmd" in
         exit 1
     fi
 
-    groupadd -f "$group"
+    # Определяем, чем владеть папке шары: локальная Unix-группа (создаём
+    # через groupadd, как раньше), AD-группа (резолвится через NSS/winbind,
+    # НЕ создаётся локально), или набор конкретных AD-пользователей (тогда
+    # владение группой не имеет смысла — доступ регулируется только через
+    # valid users, папка остаётся под root:root).
+    if [[ "$group" == AD:* ]]; then
+        ad_group_name="${group#AD:}"
+        if ! command -v getent &>/dev/null || ! getent group "$ad_group_name" &>/dev/null; then
+            echo "ERROR: AD-группа '$ad_group_name' не резолвится через NSS — сервер точно присоединён к домену и winbind запущен? Проверь вкладку Active Directory" >&2
+            exit 1
+        fi
+        chown_target="$(getent group "$ad_group_name" | cut -d: -f3)"
+        chown_note=" (AD-группа $ad_group_name, gid $chown_target)"
+    elif [[ "$group" == ADUSERS:* ]]; then
+        chown_target="root"
+        chown_note=" (доступ по конкретным AD-пользователям, без общей группы)"
+    else
+        groupadd -f "$group"
+        chown_target="$group"
+        chown_note=""
+    fi
 
     log "mkdir -p $path"
     mkdir -p "$path"
 
-    log "chown root:$group $path && chmod 2775 $path"
-    chown root:"$group" "$path"
+    log "chown root:$chown_target $path$chown_note && chmod 2775 $path"
+    chown root:"$chown_target" "$path"
     chmod 2775 "$path"
 
     if [[ "$recycle" == "yes" ]]; then
         mkdir -p "$path/.recycle"
-        chown root:"$group" "$path/.recycle"
+        chown root:"$chown_target" "$path/.recycle"
         chmod 2775 "$path/.recycle"
     fi
 
     if [[ "$antivirus" == "yes" ]]; then
         mkdir -p "$path/.quarantine"
-        chown root:"$group" "$path/.quarantine"
+        chown root:"$chown_target" "$path/.quarantine"
         chmod 2775 "$path/.quarantine"
     fi
 
@@ -695,6 +775,50 @@ case "$cmd" in
     else
         log "OK: шара '$name' — квота (мониторинговая) установлена: $quota байт"
     fi
+    ;;
+
+  set_share_group)
+    # Использование: set_share_group <name> <new_group>
+    # new_group — то же самое кодирование, что и при создании шары:
+    # обычное имя (локальная группа), "AD:группа" (группа Active Directory),
+    # или "ADUSERS:user1,user2" (конкретные пользователи AD без общей группы).
+    name="${2:-}"; new_group_raw="${3:-}"
+    validate_share_name "$name"
+    new_group="$(validate_share_group "$new_group_raw")"
+
+    ensure_db
+    if ! grep -q "^${name}|" "$SHARES_DB" 2>/dev/null; then
+        echo "ERROR: шара '$name' не найдена" >&2
+        exit 1
+    fi
+
+    line="$(grep "^${name}|" "$SHARES_DB")"
+    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+
+    if [[ "$new_group" == AD:* ]]; then
+        ad_group_name="${new_group#AD:}"
+        if ! getent group "$ad_group_name" &>/dev/null; then
+            echo "ERROR: AD-группа '$ad_group_name' не резолвится через NSS — сервер присоединён к домену и winbind запущен?" >&2
+            exit 1
+        fi
+        chown_target="$(getent group "$ad_group_name" | cut -d: -f3)"
+    elif [[ "$new_group" == ADUSERS:* ]]; then
+        chown_target="root"
+    else
+        groupadd -f "$new_group"
+        chown_target="$new_group"
+    fi
+
+    chown root:"$chown_target" "$p" 2>/dev/null || true
+    [[ -d "$p/.recycle" ]] && { chown root:"$chown_target" "$p/.recycle" 2>/dev/null || true; }
+    [[ -d "$p/.quarantine" ]] && { chown root:"$chown_target" "$p/.quarantine" 2>/dev/null || true; }
+
+    grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
+    echo "${n}|${p}|${new_group}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    mv "$SHARES_DB.tmp" "$SHARES_DB"
+    regenerate_conf
+
+    log "OK: шара '$name' — группа доступа изменена на '$new_group'"
     ;;
 
   set_share_backup)
@@ -1158,6 +1282,241 @@ EOF
     fi
     ;;
 
+  ad_status)
+    # Показывает, настроена ли AD-интеграция и присоединён ли сервер к домену.
+    if grep -q "$AD_MARKER_BEGIN" "$SMB_CONF" 2>/dev/null; then
+        configured="yes"
+        wg="$(awk -F'=' '/^[[:space:]]*workgroup[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$SMB_CONF")"
+        rl="$(awk -F'=' '/^[[:space:]]*realm[[:space:]]*=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$SMB_CONF")"
+    else
+        configured="no"; wg=""; rl=""
+    fi
+
+    joined="no"
+    if [[ "$configured" == "yes" ]] && command -v net &>/dev/null; then
+        if net ads testjoin 2>&1 | grep -qi "join is OK"; then
+            joined="yes"
+        fi
+    fi
+
+    wg_b64="$(printf '%s' "$wg" | base64 -w0)"
+    rl_b64="$(printf '%s' "$rl" | base64 -w0)"
+    echo "ADSTATUS|${configured}|${joined}|${wg_b64}|${rl_b64}"
+    ;;
+
+  ad_join)
+    # Использование: ad_join <workgroup> <realm> <idmap_range_start> <idmap_range_end> <admin_user>
+    # Пароль администратора домена читается из stdin (не через argv — не
+    # должен светиться в `ps aux`).
+    workgroup="${2:-}"; realm="${3:-}"; range_start="${4:-10000}"; range_end="${5:-999999}"; admin_user="${6:-}"
+
+    if [[ ! "$workgroup" =~ $WORKGROUP_RE ]]; then
+        echo "ERROR: некорректное имя домена (workgroup/NetBIOS) — только буквы/цифры/дефис, до 15 символов" >&2
+        exit 1
+    fi
+    if [[ ! "$realm" =~ $REALM_RE ]]; then
+        echo "ERROR: некорректный realm (обычно вида EXAMPLE.COM)" >&2
+        exit 1
+    fi
+    if [[ ! "$range_start" =~ ^[0-9]+$ || ! "$range_end" =~ ^[0-9]+$ || "$range_start" -ge "$range_end" ]]; then
+        echo "ERROR: диапазон idmap некорректен (начало должно быть меньше конца, оба — числа)" >&2
+        exit 1
+    fi
+    if [[ -z "$admin_user" ]]; then
+        echo "ERROR: не указан администратор домена для присоединения" >&2
+        exit 1
+    fi
+
+    read -r admin_password
+
+    if grep -q "$AD_MARKER_BEGIN" "$SMB_CONF" 2>/dev/null; then
+        echo "ERROR: AD-интеграция уже настроена в smb.conf — сначала 'выйти из домена', если нужно перенастроить с нуля" >&2
+        exit 1
+    fi
+
+    log "устанавливаю пакеты winbind/libnss-winbind/libpam-winbind/krb5-user (если ещё не установлены)"
+    if ! dpkg -s winbind &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq winbind libnss-winbind libpam-winbind krb5-user >/dev/null 2>&1 || {
+            echo "ERROR: не удалось установить пакеты для AD — проверь интернет/apt руками" >&2
+            exit 1
+        }
+    fi
+
+    log "настраиваю /etc/krb5.conf"
+    if [[ -f /etc/krb5.conf && ! -f /etc/krb5.conf.pre-ad-bak ]]; then
+        cp /etc/krb5.conf /etc/krb5.conf.pre-ad-bak
+    fi
+    cat > /etc/krb5.conf <<EOF
+[libdefaults]
+    default_realm = ${realm^^}
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+EOF
+
+    log "добавляю winbind в /etc/nsswitch.conf (если ещё не добавлен)"
+    if ! grep -q "^passwd:.*winbind" /etc/nsswitch.conf; then
+        sed -i 's/^passwd:\(.*\)$/passwd:\1 winbind/' /etc/nsswitch.conf
+    fi
+    if ! grep -q "^group:.*winbind" /etc/nsswitch.conf; then
+        sed -i 's/^group:\(.*\)$/group:\1 winbind/' /etc/nsswitch.conf
+    fi
+
+    log "добавляю AD-конфигурацию в /etc/samba/smb.conf (секция [global])"
+    cp "$SMB_CONF" "${SMB_CONF}.pre-ad-bak"
+    ad_block_file="$(mktemp)"
+    cat > "$ad_block_file" <<EOF
+$AD_MARKER_BEGIN
+   workgroup = ${workgroup}
+   realm = ${realm^^}
+   security = ads
+   idmap config * : backend = tdb
+   idmap config * : range = 3000-9999
+   idmap config ${workgroup} : backend = rid
+   idmap config ${workgroup} : range = ${range_start}-${range_end}
+   winbind use default domain = yes
+   winbind offline logon = yes
+   winbind refresh tickets = yes
+   winbind enum users = no
+   winbind enum groups = no
+   template shell = /bin/bash
+   template homedir = /home/%D/%U
+   kerberos method = secrets and keytab
+$AD_MARKER_END
+EOF
+    # ВАЖНО: вставляем в КОНЕЦ секции [global], а не в начало. Стандартный
+    # smb.conf на Ubuntu уже содержит свою строку "workgroup = WORKGROUP"
+    # внутри [global] — Samba при повторении параметра берёт ПОСЛЕДНЕЕ
+    # значение в секции. Если вставить наш блок в начало (сразу после
+    # заголовка [global]), собственная штатная строка "workgroup = WORKGROUP",
+    # стоящая ниже, окажется последней и победит нашу — сервер продолжит
+    # считать себя в домене "WORKGROUP", а не в реальном домене. Поэтому
+    # вставляем перед СЛЕДУЮЩИМ заголовком секции (или в конец файла, если
+    # [global] — последняя секция), чтобы наши значения были последними.
+    smb_conf_tmp="$(mktemp)"
+    awk -v block_file="$ad_block_file" '
+        BEGIN { in_global = 0; inserted = 0 }
+        {
+            if ($0 ~ /^\[global\]/) { in_global = 1; print; next }
+            if (in_global && $0 ~ /^\[/ && !inserted) {
+                while ((getline line < block_file) > 0) print line
+                close(block_file)
+                inserted = 1
+                in_global = 0
+            }
+            print
+        }
+        END {
+            if (in_global && !inserted) {
+                while ((getline line < block_file) > 0) print line
+                close(block_file)
+            }
+        }
+    ' "$SMB_CONF" > "$smb_conf_tmp"
+    mv "$smb_conf_tmp" "$SMB_CONF"
+    rm -f "$ad_block_file"
+
+    if ! testparm -s "$SMB_CONF" &>/dev/null; then
+        echo "ERROR: конфиг после добавления AD-блока не прошёл testparm — откатываю smb.conf" >&2
+        cp "${SMB_CONF}.pre-ad-bak" "$SMB_CONF"
+        exit 1
+    fi
+
+    log "выполняю net ads join -U $admin_user (может занять несколько секунд)"
+    join_output="$(printf '%s\n' "$admin_password" | net ads join -U "$admin_user" 2>&1)" || true
+    echo "$join_output"
+
+    # Не доверяем ТОЛЬКО тексту вывода net ads join — Samba может напечатать
+    # обнадёживающую строку про создание учётки в AD, а затем всё равно
+    # упасть на более позднем шаге (например, получении machine credentials
+    # из-за нехватки прав) — именно так уже случалось на практике: вывод
+    # содержал слово "Joined", а реального join не произошло. Поэтому
+    # финальная проверка — обязательно ЖИВОЙ net ads testjoin, а не парсинг текста.
+    sleep 1
+    testjoin_output="$(net ads testjoin 2>&1)" || true
+    if ! echo "$testjoin_output" | grep -qi "join is OK"; then
+        echo "$testjoin_output" >&2
+        echo "ERROR: net ads join выполнился, но testjoin НЕ подтверждает реальное присоединение — откатываю smb.conf. Обычно причина — недостаточно прав у администратора домена на создание/изменение компьютерного объекта, рассинхронизация времени с контроллером домена, или проблемы с DNS" >&2
+        cp "${SMB_CONF}.pre-ad-bak" "$SMB_CONF"
+        exit 1
+    fi
+
+    systemctl restart winbind 2>/dev/null || systemctl restart winbind.service 2>/dev/null || true
+    systemctl restart smbd 2>/dev/null || true
+
+    log "OK: сервер присоединён к домену ${realm^^} (workgroup ${workgroup}), testjoin подтверждён"
+    ;;
+
+  ad_leave)
+    # Использование: ad_leave <admin_user>
+    # Пароль администратора домена читается из stdin.
+    admin_user="${2:-}"
+    if [[ -z "$admin_user" ]]; then
+        echo "ERROR: не указан администратор домена" >&2
+        exit 1
+    fi
+    read -r admin_password
+
+    if command -v net &>/dev/null; then
+        leave_output="$(printf '%s\n' "$admin_password" | net ads leave -U "$admin_user" 2>&1)" || true
+        echo "$leave_output"
+        if ! echo "$leave_output" | grep -qi "Left the domain\|Successfully"; then
+            log "предупреждение: net ads leave вернул ошибку (см. вывод выше) — компьютерный объект в AD, возможно, придётся удалить вручную на контроллере домена. Но локальную конфигурацию (smb.conf) всё равно уберу ниже, чтобы сервер точно вернулся в обычный режим"
+        fi
+    fi
+
+    if grep -q "$AD_MARKER_BEGIN" "$SMB_CONF" 2>/dev/null; then
+        sed -i "/$AD_MARKER_BEGIN/,/$AD_MARKER_END/d" "$SMB_CONF"
+        log "AD-блок убран из smb.conf"
+    fi
+
+    if ! testparm -s "$SMB_CONF" &>/dev/null; then
+        echo "ERROR: конфиг после удаления AD-блока не прошёл testparm — проверь $SMB_CONF руками" >&2
+        exit 1
+    fi
+
+    systemctl restart smbd 2>/dev/null || true
+
+    log "OK: сервер вышел из домена. ВНИМАНИЕ: /etc/krb5.conf и запись 'winbind' в /etc/nsswitch.conf НЕ откатываются автоматически (безопаснее оставить как есть, чем агрессивно чистить системные файлы) — если нужно убрать полностью, сделай это руками"
+    ;;
+
+  ad_test)
+    # Проверка живого статуса присоединения (без изменений).
+    if ! command -v wbinfo &>/dev/null; then
+        echo "ERROR: wbinfo не найден — winbind не установлен (сервер ещё не присоединялся к AD)" >&2
+        exit 1
+    fi
+    echo "--- net ads testjoin ---"
+    net ads testjoin 2>&1 || true
+    echo "--- wbinfo -t (проверка доверенного секрета) ---"
+    wbinfo -t 2>&1 || true
+    echo "--- wbinfo -p (проверка связи с DC) ---"
+    wbinfo -p 2>&1 || true
+    ;;
+
+  ad_list_users)
+    # Список пользователей AD (первые 200) — для помощи при настройке доступа к шарам.
+    if ! command -v wbinfo &>/dev/null; then
+        echo "ERROR: winbind не установлен" >&2
+        exit 1
+    fi
+    wbinfo -u 2>/dev/null | head -200 | while read -r u; do
+        u_b64="$(printf '%s' "$u" | base64 -w0)"
+        echo "ADUSER|${u_b64}"
+    done || true
+    ;;
+
+  ad_list_groups)
+    # Список групп AD (первые 200) — для выбора группы доступа к шаре.
+    if ! command -v wbinfo &>/dev/null; then
+        echo "ERROR: winbind не установлен" >&2
+        exit 1
+    fi
+    wbinfo -g 2>/dev/null | head -200 | while read -r g; do
+        g_b64="$(printf '%s' "$g" | base64 -w0)"
+        echo "ADGROUP|${g_b64}"
+    done || true
+    ;;
+
   get_smtp_config)
     # Читает текущие настройки SMTP (/etc/msmtprc) для отображения в панели.
     # Пароль НИКОГДА не возвращается обратно в браузер — только флаг
@@ -1362,12 +1721,13 @@ EOF
     echo "Доступные команды: create_user, remove_user, set_samba_password, toggle_share_access, list_users," >&2
     echo "                   create_share, remove_share, set_share_writable, set_share_hosts, set_share_veto," >&2
     echo "                   set_share_recycle, empty_recycle_bin, list_recycle_bin, restore_recycle_file," >&2
-    echo "                   set_share_antivirus, empty_quarantine, list_shares," >&2
+    echo "                   set_share_antivirus, empty_quarantine, list_shares, set_share_group," >&2
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
     echo "                   get_notify_config, set_notify_config, test_notify," >&2
-    echo "                   get_smtp_config, set_smtp_config, test_smtp_send" >&2
+    echo "                   get_smtp_config, set_smtp_config, test_smtp_send," >&2
+    echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups" >&2
     exit 1
     ;;
 esac
