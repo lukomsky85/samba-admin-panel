@@ -548,6 +548,46 @@ def api_test_notify():
     return jsonify(ok=ok, output=output)
 
 
+@app.route("/api/get_smtp_config")
+@login_required
+def api_get_smtp_config():
+    ok, output = run_helper(["get_smtp_config"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_smtp_config", methods=["POST"])
+@login_required
+def api_set_smtp_config():
+    data = request.get_json(force=True)
+    host = (data.get("host") or "").strip()
+    port = (data.get("port") or "587").strip()
+    from_addr = (data.get("from_addr") or "").strip()
+    user = (data.get("user") or "").strip()
+    password = data.get("password") or ""  # может быть пустым — тогда старый пароль сохранится
+
+    host_b64 = base64.b64encode(host.encode()).decode()
+    port_b64 = base64.b64encode(port.encode()).decode()
+    from_b64 = base64.b64encode(from_addr.encode()).decode()
+    user_b64 = base64.b64encode(user.encode()).decode()
+    password_b64 = base64.b64encode(password.encode()).decode()
+
+    ok, output = run_helper(["set_smtp_config", host_b64, port_b64, from_b64, user_b64, password_b64])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/test_smtp_send", methods=["POST"])
+@login_required
+def api_test_smtp_send():
+    data = request.get_json(force=True)
+    email = (data.get("email") or "").strip()
+    if not email:
+        return jsonify(ok=False, output="ERROR: укажи адрес для теста")
+
+    email_b64 = base64.b64encode(email.encode()).decode()
+    ok, output = run_helper(["test_smtp_send", email_b64])
+    return jsonify(ok=ok, output=output)
+
+
 @app.route("/api/disk_smart_summary")
 @login_required
 def api_disk_smart_summary():

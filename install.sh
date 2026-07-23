@@ -52,7 +52,7 @@ echo
 # 1. Пакеты
 # ---------------------------------------------------------------------------
 
-step "устанавливаю системные пакеты (samba, avahi, python3-venv, ufw, nginx, clamav, rsyslog, smartmontools)"
+step "устанавливаю системные пакеты (samba, avahi, python3-venv, ufw, nginx, clamav, rsyslog, smartmontools, msmtp)"
 apt update -qq
 apt install -y -qq \
     samba samba-vfs-modules avahi-daemon python3-venv ufw \
@@ -60,6 +60,7 @@ apt install -y -qq \
     clamav-daemon clamav-freshclam \
     rsyslog \
     smartmontools util-linux \
+    mailutils msmtp msmtp-mta \
     >/dev/null
 
 # ---------------------------------------------------------------------------

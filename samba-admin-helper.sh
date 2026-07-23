@@ -1158,6 +1158,116 @@ EOF
     fi
     ;;
 
+  get_smtp_config)
+    # Читает текущие настройки SMTP (/etc/msmtprc) для отображения в панели.
+    # Пароль НИКОГДА не возвращается обратно в браузер — только флаг
+    # "задан/не задан" (has_password), это стандартная практика для секретов.
+    MSMTPRC="/etc/msmtprc"
+    smtp_host=""; smtp_port="587"; smtp_from=""; smtp_user=""; has_password="no"
+    if [[ -f "$MSMTPRC" ]]; then
+        smtp_host="$(awk '$1=="host"{print $2; exit}' "$MSMTPRC" 2>/dev/null || true)"
+        smtp_port="$(awk '$1=="port"{print $2; exit}' "$MSMTPRC" 2>/dev/null || true)"
+        smtp_from="$(awk '$1=="from"{print $2; exit}' "$MSMTPRC" 2>/dev/null || true)"
+        smtp_user="$(awk '$1=="user"{print $2; exit}' "$MSMTPRC" 2>/dev/null || true)"
+        if awk '$1=="password"{f=1} END{exit !f}' "$MSMTPRC" 2>/dev/null; then
+            has_password="yes"
+        fi
+    fi
+    host_b64="$(printf '%s' "$smtp_host" | base64 -w0)"
+    port_b64="$(printf '%s' "${smtp_port:-587}" | base64 -w0)"
+    from_b64="$(printf '%s' "$smtp_from" | base64 -w0)"
+    user_b64="$(printf '%s' "$smtp_user" | base64 -w0)"
+    echo "SMTPCONF|${host_b64}|${port_b64}|${from_b64}|${user_b64}|${has_password}"
+    ;;
+
+  set_smtp_config)
+    # Использование: set_smtp_config <host_b64> <port_b64> <from_b64> <user_b64> <password_b64>
+    # password_b64 может быть пустым — тогда СУЩЕСТВУЮЩИЙ сохранённый пароль
+    # (если есть) остаётся как есть, а не стирается пустотой. Это позволяет
+    # поправить, например, только адрес отправителя, не вводя пароль заново.
+    MSMTPRC="/etc/msmtprc"
+    host_b64="${2:-}"; port_b64="${3:-}"; from_b64="${4:-}"; user_b64="${5:-}"; password_b64="${6:-}"
+
+    host="$(printf '%s' "$host_b64" | base64 -d 2>/dev/null || true)"
+    port="$(printf '%s' "$port_b64" | base64 -d 2>/dev/null || true)"
+    from_addr="$(printf '%s' "$from_b64" | base64 -d 2>/dev/null || true)"
+    user="$(printf '%s' "$user_b64" | base64 -d 2>/dev/null || true)"
+    password="$(printf '%s' "$password_b64" | base64 -d 2>/dev/null || true)"
+
+    if [[ -z "$host" ]]; then
+        echo "ERROR: не указан SMTP-сервер (host)" >&2
+        exit 1
+    fi
+    port="${port:-587}"
+    if [[ ! "$port" =~ ^[0-9]{1,5}$ ]]; then
+        echo "ERROR: порт должен быть числом" >&2
+        exit 1
+    fi
+    if [[ -z "$from_addr" || ! "$from_addr" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+        echo "ERROR: адрес отправителя (from) должен быть похож на email" >&2
+        exit 1
+    fi
+    user="${user:-$from_addr}"
+
+    if [[ -z "$password" && -f "$MSMTPRC" ]]; then
+        password="$(awk '$1=="password"{print $2; exit}' "$MSMTPRC" 2>/dev/null || true)"
+    fi
+    if [[ -z "$password" ]]; then
+        echo "ERROR: пароль не указан и не найден ранее сохранённый — заполни поле пароля хотя бы один раз" >&2
+        exit 1
+    fi
+
+    cat > "$MSMTPRC" <<EOF
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           ${host}
+port           ${port}
+from           ${from_addr}
+user           ${user}
+password       ${password}
+EOF
+    # msmtp категорически отказывается работать, если конфиг читаем кем-то
+    # кроме владельца, — 600 тут не просто "хорошая практика", а обязательное
+    # требование самой программы, иначе она откажется отправлять письма вообще.
+    chmod 600 "$MSMTPRC"
+    chown root:root "$MSMTPRC"
+
+    log "OK: SMTP-настройки сохранены (${host}:${port}, from=${from_addr})"
+    ;;
+
+  test_smtp_send)
+    # Использование: test_smtp_send <email_b64>
+    # Отправляет реальное тестовое письмо на указанный адрес прямо сейчас.
+    email_b64="${2:-}"
+    email="$(printf '%s' "$email_b64" | base64 -d 2>/dev/null || true)"
+
+    if [[ -z "$email" ]]; then
+        echo "ERROR: не указан адрес для теста" >&2
+        exit 1
+    fi
+    if [[ ! -f /etc/msmtprc ]]; then
+        echo "ERROR: SMTP ещё не настроен (нет /etc/msmtprc) — сначала сохрани настройки выше" >&2
+        exit 1
+    fi
+    if ! command -v mail &>/dev/null; then
+        echo "ERROR: команда 'mail' не установлена — установи пакет mailutils" >&2
+        exit 1
+    fi
+
+    if echo "Тестовое письмо от samba-admin panel, отправлено $(date '+%Y-%m-%d %H:%M:%S')" \
+        | mail -s "samba-admin panel: тестовое письмо" "$email" 2>&1; then
+        echo "OK: письмо отправлено на $email — проверь входящие (и папку спам, для нового отправителя это обычно)"
+    else
+        echo "ERROR: mail завершился с ошибкой — подробности в /var/log/msmtp.log" >&2
+        exit 1
+    fi
+    ;;
+
   mount_disk)
     # Использование: mount_disk <device> <mountpoint> <persistent: yes/no>
     # persistent=yes добавляет запись в /etc/fstab по UUID (переживает перезагрузку).
@@ -1256,7 +1366,8 @@ EOF
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
-    echo "                   get_notify_config, set_notify_config, test_notify" >&2
+    echo "                   get_notify_config, set_notify_config, test_notify," >&2
+    echo "                   get_smtp_config, set_smtp_config, test_smtp_send" >&2
     exit 1
     ;;
 esac

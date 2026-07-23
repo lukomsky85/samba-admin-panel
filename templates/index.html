@@ -368,7 +368,7 @@
         <div>
           <label for="notify-email">Email для уведомлений</label>
           <input id="notify-email" placeholder="admin@example.com">
-          <p class="modal-sub" style="margin:0;">Почта требует уже настроенной на сервере отправки (<code>mail</code>/<code>msmtp</code>) — сама панель почтовый релей не настраивает.</p>
+          <p class="modal-sub" style="margin:0;">Почта требует настроенного ниже SMTP-релея — без него письма никуда не уйдут.</p>
         </div>
       </div>
       <div class="row" style="margin-top:12px; gap:10px;">
@@ -376,6 +376,33 @@
         <button onclick="testNotifyConfig()">[ отправить тестовое уведомление ]</button>
       </div>
       <div class="output-box" id="notify-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Настройка отправки почты (SMTP)</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Нужно один раз указать данные твоего почтового ящика (через какой сервер уходят письма) — панель сама поставит и настроит <code>msmtp</code>. Пароль хранится в файле <code>/etc/msmtprc</code> с правами 600 (читает только root) — это требование самой программы <code>msmtp</code>, а не наша прихоть.</p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="smtp-host">SMTP-сервер (host)</label>
+          <input id="smtp-host" placeholder="smtp.yandex.ru">
+          <label for="smtp-port">порт</label>
+          <input id="smtp-port" placeholder="587" value="587">
+        </div>
+        <div>
+          <label for="smtp-from">адрес отправителя (from)</label>
+          <input id="smtp-from" placeholder="mikhail@lukomsky.ru">
+          <label for="smtp-user">логин (обычно тот же адрес)</label>
+          <input id="smtp-user" placeholder="mikhail@lukomsky.ru">
+        </div>
+      </div>
+      <label for="smtp-password" id="smtp-password-label">пароль (или пароль приложения для Gmail/Яндекса)</label>
+      <input id="smtp-password" type="password" placeholder="">
+      <div class="row" style="margin-top:4px; gap:10px; align-items:flex-start;">
+        <input id="smtp-test-email" placeholder="куда прислать тестовое письмо" style="flex:1;">
+        <button onclick="saveSmtpConfig()">[ сохранить ]</button>
+        <button onclick="testSmtpSend()">[ отправить тестовое письмо ]</button>
+      </div>
+      <div class="output-box" id="smtp-test-output" style="display:none; margin-top:10px;"></div>
     </div>
 
     <div class="panel userlist">
@@ -1179,6 +1206,57 @@ async function testNotifyConfig() {
   renderOutput('test_notify', data);
 }
 
+async function loadSmtpConfig() {
+  try {
+    const res = await fetch('/api/get_smtp_config');
+    const data = await res.json();
+    const line = (data.output || '').split('\n').find(l => l.trim().startsWith('SMTPCONF|'));
+    if (!line) return;
+    const parts = line.trim().split('|');
+    if (parts.length < 6) return;
+    const [, hostB64, portB64, fromB64, userB64, hasPassword] = parts;
+    document.getElementById('smtp-host').value = hostB64 ? b64DecodeUtf8(hostB64) : '';
+    document.getElementById('smtp-port').value = portB64 ? b64DecodeUtf8(portB64) : '587';
+    document.getElementById('smtp-from').value = fromB64 ? b64DecodeUtf8(fromB64) : '';
+    document.getElementById('smtp-user').value = userB64 ? b64DecodeUtf8(userB64) : '';
+    const pwInput = document.getElementById('smtp-password');
+    const pwLabel = document.getElementById('smtp-password-label');
+    pwInput.value = '';
+    if (hasPassword === 'yes') {
+      pwInput.placeholder = '•••••••• (уже сохранён — оставь пустым, чтобы не менять)';
+      pwLabel.textContent = 'пароль (уже задан — заполни, только если хочешь его сменить)';
+    } else {
+      pwInput.placeholder = '';
+      pwLabel.textContent = 'пароль (или пароль приложения для Gmail/Яндекса)';
+    }
+  } catch (e) { /* тихо игнорируем */ }
+}
+
+async function saveSmtpConfig() {
+  const host = document.getElementById('smtp-host').value.trim();
+  const port = document.getElementById('smtp-port').value.trim() || '587';
+  const from_addr = document.getElementById('smtp-from').value.trim();
+  const user = document.getElementById('smtp-user').value.trim();
+  const password = document.getElementById('smtp-password').value;
+  if (!host || !from_addr) { logLine('ERROR: укажи хотя бы SMTP-сервер и адрес отправителя', 'line-err'); return; }
+  const data = await post('/api/set_smtp_config', {host, port, from_addr, user, password});
+  renderOutput('set_smtp_config', data);
+  if (data.ok) loadSmtpConfig();
+}
+
+async function testSmtpSend() {
+  const email = document.getElementById('smtp-test-email').value.trim();
+  if (!email) { logLine('ERROR: укажи адрес, куда прислать тестовое письмо', 'line-err'); return; }
+  const box = document.getElementById('smtp-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">отправляю письмо...</span>';
+  const data = await post('/api/test_smtp_send', {email});
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || 'OK')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('test_smtp_send ' + email, data);
+}
+
 async function refreshConnections() {
   const box = document.getElementById('connections-output');
   if (!box.dataset.loaded) box.innerHTML = '<span class="badge-off">загрузка...</span>';
@@ -1437,6 +1515,7 @@ function showTab(tabName) {
     refreshAuditLog();
     refreshFileAuditLog();
     loadNotifyConfig();
+    loadSmtpConfig();
     startMonitorAutoRefresh();
   } else {
     stopMonitorAutoRefresh();
