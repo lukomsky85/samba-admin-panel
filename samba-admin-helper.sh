@@ -1083,6 +1083,81 @@ case "$cmd" in
     done
     ;;
 
+  get_notify_config)
+    # Читает текущие настройки уведомлений (для отображения в панели).
+    # Значения гоняются в base64, чтобы спецсимволы в токене/адресе не
+    # ломали протокол '|'.
+    NOTIFY_CONF_PATH="/etc/sambapanel/notify.conf"
+    TELEGRAM_BOT_TOKEN=""
+    TELEGRAM_CHAT_ID=""
+    NOTIFY_EMAIL=""
+    if [[ -f "$NOTIFY_CONF_PATH" ]]; then
+        # shellcheck source=/dev/null
+        source "$NOTIFY_CONF_PATH"
+    fi
+    token_b64="$(printf '%s' "${TELEGRAM_BOT_TOKEN:-}" | base64 -w0)"
+    chatid_b64="$(printf '%s' "${TELEGRAM_CHAT_ID:-}" | base64 -w0)"
+    email_b64="$(printf '%s' "${NOTIFY_EMAIL:-}" | base64 -w0)"
+    echo "NOTIFYCONF|${token_b64}|${chatid_b64}|${email_b64}"
+    ;;
+
+  set_notify_config)
+    # Использование: set_notify_config <bot_token_b64> <chat_id_b64> <email_b64>
+    # Любое из полей можно оставить пустым (пустая база64 строка) — тогда
+    # соответствующий канал уведомлений просто не настроен.
+    NOTIFY_CONF_PATH="/etc/sambapanel/notify.conf"
+    token_b64="${2:-}"; chatid_b64="${3:-}"; email_b64="${4:-}"
+
+    token="$(printf '%s' "$token_b64" | base64 -d 2>/dev/null || true)"
+    chatid="$(printf '%s' "$chatid_b64" | base64 -d 2>/dev/null || true)"
+    email="$(printf '%s' "$email_b64" | base64 -d 2>/dev/null || true)"
+
+    if [[ -n "$token" && ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        echo "ERROR: токен Telegram-бота выглядит некорректно (обычно вида 123456789:AAExampleToken...)" >&2
+        exit 1
+    fi
+    if [[ -n "$chatid" && ! "$chatid" =~ ^-?[0-9]+$ ]]; then
+        echo "ERROR: chat_id должен быть числом (может быть отрицательным — это ID группы)" >&2
+        exit 1
+    fi
+    if [[ -n "$email" && ! "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+        echo "ERROR: email выглядит некорректно" >&2
+        exit 1
+    fi
+
+    mkdir -p /etc/sambapanel
+    cat > "$NOTIFY_CONF_PATH" <<EOF
+TELEGRAM_BOT_TOKEN="${token}"
+TELEGRAM_CHAT_ID="${chatid}"
+NOTIFY_EMAIL="${email}"
+EOF
+    chmod 640 "$NOTIFY_CONF_PATH"
+    chown root:root "$NOTIFY_CONF_PATH"
+
+    extra=""
+    [[ -n "$token" && -n "$chatid" ]] && extra="$extra Telegram настроен."
+    [[ -n "$email" ]] && extra="$extra почта настроена ($email)."
+    [[ -z "$extra" ]] && extra=" оба канала пустые — уведомления отправляться не будут (это ок, если так и задумано)."
+    log "OK: настройки уведомлений сохранены.$extra"
+    ;;
+
+  test_notify)
+    # Прогоняет реальную тестовую отправку прямо сейчас, без ожидания
+    # настоящего падения сервиса.
+    if [[ ! -x /usr/local/sbin/samba-notify-failure.sh ]]; then
+        echo "ERROR: /usr/local/sbin/samba-notify-failure.sh не установлен (переустанови панель через install.sh)" >&2
+        exit 1
+    fi
+    result="$(/usr/local/sbin/samba-notify-failure.sh "тестовое-уведомление-из-панели" 2>&1)"
+    echo "$result" | grep -v "^STATUS|" || true
+    if echo "$result" | grep -q "^STATUS|SENT|"; then
+        echo "OK: тестовое уведомление отправлено — проверь Telegram/почту"
+    else
+        echo "ERROR: уведомление НЕ отправлено — проверь, что хотя бы один канал заполнен и данные верные" >&2
+        exit 1
+    fi
+    ;;
+
   mount_disk)
     # Использование: mount_disk <device> <mountpoint> <persistent: yes/no>
     # persistent=yes добавляет запись в /etc/fstab по UUID (переживает перезагрузку).
@@ -1180,7 +1255,8 @@ case "$cmd" in
     echo "                   set_share_antivirus, empty_quarantine, list_shares," >&2
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
-    echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories" >&2
+    echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
+    echo "                   get_notify_config, set_notify_config, test_notify" >&2
     exit 1
     ;;
 esac

@@ -355,6 +355,29 @@
       </div>
     </div>
 
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Уведомления о падении сервисов</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Если <code>smbd</code>, <code>clamav-daemon</code>, <code>nginx</code> или сама панель упадут — придёт сообщение сюда. Пустые поля = канал не используется, можно заполнить только один или оба сразу.</p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="notify-telegram-token">Telegram bot token</label>
+          <input id="notify-telegram-token" placeholder="123456789:AAExampleToken...">
+          <label for="notify-telegram-chatid">Telegram chat_id</label>
+          <input id="notify-telegram-chatid" placeholder="555111222">
+        </div>
+        <div>
+          <label for="notify-email">Email для уведомлений</label>
+          <input id="notify-email" placeholder="admin@example.com">
+          <p class="modal-sub" style="margin:0;">Почта требует уже настроенной на сервере отправки (<code>mail</code>/<code>msmtp</code>) — сама панель почтовый релей не настраивает.</p>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px; gap:10px;">
+        <button onclick="saveNotifyConfig()">[ сохранить ]</button>
+        <button onclick="testNotifyConfig()">[ отправить тестовое уведомление ]</button>
+      </div>
+      <div class="output-box" id="notify-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
     <div class="panel userlist">
       <h2>Активные подключения</h2>
       <div class="output-box" id="connections-output">
@@ -1122,6 +1145,40 @@ function smoothBoxUpdate(box, html) {
   setTimeout(() => box.classList.remove('just-updated'), 500);
 }
 
+async function loadNotifyConfig() {
+  try {
+    const res = await fetch('/api/get_notify_config');
+    const data = await res.json();
+    const line = (data.output || '').split('\n').find(l => l.trim().startsWith('NOTIFYCONF|'));
+    if (!line) return;
+    const parts = line.trim().split('|');
+    if (parts.length < 4) return;
+    const [, tokenB64, chatidB64, emailB64] = parts;
+    document.getElementById('notify-telegram-token').value = tokenB64 ? b64DecodeUtf8(tokenB64) : '';
+    document.getElementById('notify-telegram-chatid').value = chatidB64 ? b64DecodeUtf8(chatidB64) : '';
+    document.getElementById('notify-email').value = emailB64 ? b64DecodeUtf8(emailB64) : '';
+  } catch (e) { /* тихо игнорируем — просто оставит поля пустыми */ }
+}
+
+async function saveNotifyConfig() {
+  const telegram_token = document.getElementById('notify-telegram-token').value.trim();
+  const telegram_chat_id = document.getElementById('notify-telegram-chatid').value.trim();
+  const notify_email = document.getElementById('notify-email').value.trim();
+  const data = await post('/api/set_notify_config', {telegram_token, telegram_chat_id, notify_email});
+  renderOutput('set_notify_config', data);
+}
+
+async function testNotifyConfig() {
+  const box = document.getElementById('notify-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">отправляю тестовое уведомление...</span>';
+  const data = await post('/api/test_notify', {});
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || 'OK')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('test_notify', data);
+}
+
 async function refreshConnections() {
   const box = document.getElementById('connections-output');
   if (!box.dataset.loaded) box.innerHTML = '<span class="badge-off">загрузка...</span>';
@@ -1379,6 +1436,7 @@ function showTab(tabName) {
     refreshConnections();
     refreshAuditLog();
     refreshFileAuditLog();
+    loadNotifyConfig();
     startMonitorAutoRefresh();
   } else {
     stopMonitorAutoRefresh();

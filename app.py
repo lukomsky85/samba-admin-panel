@@ -13,6 +13,7 @@ sambapanel — маленькая веб-панель в стиле термин
   сверх простой сессии, и это создаёт пользователей в системе.
 """
 
+import base64
 import ipaddress
 import os
 import re
@@ -514,6 +515,36 @@ def api_list_directories():
         return jsonify(ok=False, output="ERROR: недопустимый путь")
 
     ok, output = run_helper(["list_directories", path])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/get_notify_config")
+@login_required
+def api_get_notify_config():
+    ok, output = run_helper(["get_notify_config"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_notify_config", methods=["POST"])
+@login_required
+def api_set_notify_config():
+    data = request.get_json(force=True)
+    token = (data.get("telegram_token") or "").strip()
+    chat_id = (data.get("telegram_chat_id") or "").strip()
+    email = (data.get("notify_email") or "").strip()
+
+    token_b64 = base64.b64encode(token.encode()).decode()
+    chatid_b64 = base64.b64encode(chat_id.encode()).decode()
+    email_b64 = base64.b64encode(email.encode()).decode()
+
+    ok, output = run_helper(["set_notify_config", token_b64, chatid_b64, email_b64])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/test_notify", methods=["POST"])
+@login_required
+def api_test_notify():
+    ok, output = run_helper(["test_notify"])
     return jsonify(ok=ok, output=output)
 
 
