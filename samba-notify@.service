@@ -1,0 +1,6 @@
+[Unit]
+Description=Уведомление о сбое сервиса %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/samba-notify-failure.sh %i

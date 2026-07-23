@@ -1,0 +1,41 @@
+# 🔐 Secrets & Local Configs (CRITICAL)
+repositories.json
+secure_token.dat
+*.env
+.env.local
+config_local.py
+secrets.json
+*.key
+*.pem
+
+# 🐍 Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.eggs/
+*.egg
+
+# 📦 PyInstaller / Build
+build/
+dist/
+*.spec
+*.manifest
+*.exe
+
+# 💻 IDE & OS
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp

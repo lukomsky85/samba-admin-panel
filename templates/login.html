@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>samba-admin :: login</title>
+<style>
+  :root {
+    --bg: #0b0f0d;
+    --fg: #39ff6a;
+    --fg-dim: #1f8f42;
+    --amber: #ffb000;
+    --red: #ff5555;
+    --panel: #0f1512;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    display: flex; align-items: center; justify-content: center;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,0.15) 3px
+    );
+    pointer-events: none;
+  }
+  .box {
+    width: min(420px, 90vw);
+    border: 1px solid var(--fg-dim);
+    padding: 28px 26px;
+    background: var(--panel);
+    box-shadow: 0 0 24px rgba(57,255,106,0.08);
+  }
+  .title { color: var(--fg); margin: 0 0 4px; font-size: 15px; letter-spacing: 1px; }
+  .sub { color: var(--fg-dim); font-size: 12px; margin: 0 0 20px; }
+  label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 6px; }
+  input {
+    width: 100%; background: #060907; border: 1px solid var(--fg-dim);
+    color: var(--fg); font-family: inherit; font-size: 14px;
+    padding: 9px 10px; margin-bottom: 16px; outline: none;
+  }
+  input:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg) inset; }
+  button {
+    width: 100%; background: transparent; border: 1px solid var(--fg);
+    color: var(--fg); font-family: inherit; font-size: 14px; padding: 10px;
+    cursor: pointer; letter-spacing: 1px;
+  }
+  button:hover { background: var(--fg); color: #05100a; }
+  .err { color: var(--red); font-size: 12px; margin: -8px 0 14px; }
+  .cursor { display: inline-block; width: 8px; background: var(--fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+  <div class="box">
+    <p class="title">root@fileserver:~# ./samba-admin --login</p>
+    <p class="sub">доступ только из локальной сети<span class="cursor">&nbsp;</span></p>
+    {% if error %}<p class="err">&gt; {{ error }}</p>{% endif %}
+    <form method="POST">
+      <label for="password">пароль панели</label>
+      <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+      <button type="submit">[ enter ]</button>
+    </form>
+  </div>
+</body>
+</html>

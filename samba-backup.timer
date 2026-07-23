@@ -1,0 +1,10 @@
+[Unit]
+Description=Ежедневный бэкап Samba-шар
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

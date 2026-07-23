@@ -1,0 +1,6 @@
+[Unit]
+Description=Бэкап Samba-шар (samba-admin panel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/samba-backup.sh

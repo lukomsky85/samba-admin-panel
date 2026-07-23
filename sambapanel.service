@@ -1,0 +1,33 @@
+[Unit]
+Description=samba-admin terminal panel
+After=network.target smbd.service
+
+[Service]
+Type=simple
+User=www-panel
+Group=www-panel
+WorkingDirectory=/opt/sambapanel
+Environment="SAMBAPANEL_PASSWORD=CHANGE_ME"
+Environment="SAMBAPANEL_SECRET=CHANGE_ME_SECRET"
+# gunicorn вместо встроенного dev-сервера Flask — тот прямо предупреждает
+# "Do not use it in a production deployment".
+#
+# ВАЖНО: 1 воркер (процесс) + 4 потока, а НЕ несколько воркеров.
+# Rate-limit на вход в панель и сессии хранятся в памяти Python-процесса —
+# с несколькими воркерами (отдельными процессами) у каждого была бы своя
+# копия счётчика попыток входа, и лимит фактически умножался бы на число
+# воркеров. Один процесс с потоками (gthread) даёт конкурентность без этой
+# проблемы, поскольку потоки делят память процесса между собой.
+# --timeout 120 — с запасом для du/бэкапов/антивирус-сканов, которые могут
+# идти дольше стандартных 30 секунд gunicorn по умолчанию.
+ExecStart=/opt/sambapanel/venv/bin/gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:5000 --timeout 120 app:app
+Restart=on-failure
+RestartSec=3
+
+# Немного harden'а, не мешая функциональности (sudo вызывается отдельно)
+NoNewPrivileges=false
+ProtectSystem=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

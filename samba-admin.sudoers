@@ -1,0 +1,9 @@
+# Разместить как /etc/sudoers.d/samba-admin (chmod 440, root:root)
+#
+# Разрешает системному пользователю www-panel запускать ИСКЛЮЧИТЕЛЬНО
+# /usr/local/sbin/samba-admin-helper.sh от root, без ввода пароля.
+# Больше НИЧЕГО этому пользователю от root не разрешено.
+#
+# Проверить синтаксис перед установкой: visudo -c -f samba-admin.sudoers
+
+www-panel ALL=(root) NOPASSWD: /usr/local/sbin/samba-admin-helper.sh *
