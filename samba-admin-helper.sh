@@ -30,6 +30,9 @@ MOUNTPATH_RE='^/[A-Za-z0-9_./-]+$'
 WORKGROUP_RE='^[A-Za-z0-9-]{1,15}$'
 REALM_RE='^[A-Za-z0-9.-]{1,255}$'
 SMB_CONF="/etc/samba/smb.conf"
+UPDATE_REPO="lukomsky85/samba-admin-panel"
+VERSION_FILE="/opt/sambapanel/VERSION"
+TAG_RE='^[A-Za-z0-9_.-]{1,64}$'
 AD_MARKER_BEGIN="# --- BEGIN AD INTEGRATION (managed by samba-admin panel, do not edit between markers) ---"
 AD_MARKER_END="# --- END AD INTEGRATION ---"
 
@@ -1517,6 +1520,116 @@ EOF
     done || true
     ;;
 
+  check_update)
+    # Только чтение — сверяет текущую версию с последним релизом на GitHub,
+    # ничего не скачивает и не меняет.
+    current_version="неизвестно"
+    [[ -f "$VERSION_FILE" ]] && current_version="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
+    [[ -z "$current_version" ]] && current_version="неизвестно"
+
+    if ! command -v curl &>/dev/null; then
+        echo "ERROR: curl не найден — не могу проверить обновления" >&2
+        exit 1
+    fi
+
+    api_response="$(curl -s -m 15 "https://api.github.com/repos/${UPDATE_REPO}/releases/latest" 2>/dev/null || true)"
+    if [[ -z "$api_response" ]]; then
+        echo "ERROR: не удалось связаться с GitHub API (нет интернета на сервере?)" >&2
+        exit 1
+    fi
+
+    # GitHub отдаёт {"message": "..."} и в случае rate-limit, и если релизов
+    # ещё вообще нет ни одного — оба случая нужно показать по-человечески,
+    # а не как загадочную ошибку парсинга.
+    if echo "$api_response" | grep -q '"message"[[:space:]]*:'; then
+        msg="$(echo "$api_response" | grep -oP '"message"\s*:\s*"\K[^"]+' | head -1)"
+        echo "UPDATECHECK|error|${current_version}||${msg:-неизвестная ошибка GitHub API}"
+        exit 0
+    fi
+
+    latest_tag="$(echo "$api_response" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | head -1)"
+    release_url="$(echo "$api_response" | grep -oP '"html_url"\s*:\s*"\K[^"]+' | head -1)"
+
+    if [[ -z "$latest_tag" ]]; then
+        echo "ERROR: не удалось разобрать ответ GitHub API" >&2
+        exit 1
+    fi
+
+    if [[ "$latest_tag" == "$current_version" ]]; then
+        echo "UPDATECHECK|uptodate|${current_version}|${latest_tag}|${release_url}"
+    else
+        echo "UPDATECHECK|available|${current_version}|${latest_tag}|${release_url}"
+    fi
+    ;;
+
+  apply_update)
+    # Использование: apply_update <tag>
+    # Скачивает конкретный релиз с GitHub и запускает ЕГО СОБСТВЕННЫЙ
+    # install.sh — тот же самый идемпотентный установщик, что и при первой
+    # установке. Осознанный выбор: не копируем файлы вручную (отдельный,
+    # непроверенный путь для апдейта), а переиспользуем install.sh, который
+    # уже полностью отлажен и умеет безопасно накатываться поверх существующей
+    # установки (проверяет наличие пакетов/юнитов/паролей перед созданием
+    # заново, не трогает шары и локальных пользователей).
+    tag="${2:-}"
+    if [[ -z "$tag" || ! "$tag" =~ $TAG_RE ]]; then
+        echo "ERROR: некорректный номер версии для обновления" >&2
+        exit 1
+    fi
+
+    tmp_dir="$(mktemp -d)"
+    archive_url="https://github.com/${UPDATE_REPO}/archive/refs/tags/${tag}.tar.gz"
+
+    log "скачиваю релиз $tag с GitHub"
+    if ! curl -sfL -m 60 -o "$tmp_dir/release.tar.gz" "$archive_url"; then
+        echo "ERROR: не удалось скачать $archive_url — убедись, что релиз '$tag' реально существует в репозитории (https://github.com/${UPDATE_REPO}/releases)" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    if [[ ! -s "$tmp_dir/release.tar.gz" ]]; then
+        echo "ERROR: скачанный файл пустой — убедись, что тег '$tag' реально существует в репозитории" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    log "распаковываю"
+    if ! tar xzf "$tmp_dir/release.tar.gz" -C "$tmp_dir" 2>/dev/null; then
+        echo "ERROR: не удалось распаковать скачанный архив" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    extracted_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    if [[ -z "$extracted_dir" || ! -f "$extracted_dir/install.sh" ]]; then
+        echo "ERROR: в скачанном релизе не найден install.sh — структура релиза не соответствует ожидаемой" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    # сохраняем текущий пароль панели, чтобы install.sh не сгенерировал новый
+    current_password=""
+    if [[ -f /etc/systemd/system/sambapanel.service ]]; then
+        current_password="$(grep -oP '(?<=SAMBAPANEL_PASSWORD=)[^"]*' /etc/systemd/system/sambapanel.service 2>/dev/null || true)"
+    fi
+
+    log "запускаю install.sh из версии $tag (неинтерактивно, текущий пароль панели сохраняется)"
+    chmod +x "$extracted_dir/install.sh"
+    ( cd "$extracted_dir" && SAMBAPANEL_PASSWORD="$current_password" bash ./install.sh < /dev/null 2>&1 )
+    install_exit=$?
+
+    if [[ "$install_exit" -ne 0 ]]; then
+        rm -rf "$tmp_dir"
+        echo "ERROR: install.sh завершился с ошибкой (код $install_exit) — панель могла обновиться не до конца, смотри вывод выше" >&2
+        exit 1
+    fi
+
+    mkdir -p /opt/sambapanel
+    echo "$tag" > "$VERSION_FILE" 2>/dev/null || true
+    rm -rf "$tmp_dir"
+
+    log "OK: панель обновлена до версии $tag"
+    ;;
+
   get_smtp_config)
     # Читает текущие настройки SMTP (/etc/msmtprc) для отображения в панели.
     # Пароль НИКОГДА не возвращается обратно в браузер — только флаг
@@ -1727,7 +1840,8 @@ EOF
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
     echo "                   get_notify_config, set_notify_config, test_notify," >&2
     echo "                   get_smtp_config, set_smtp_config, test_smtp_send," >&2
-    echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups" >&2
+    echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups," >&2
+    echo "                   check_update, apply_update" >&2
     exit 1
     ;;
 esac

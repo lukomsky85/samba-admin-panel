@@ -253,6 +253,14 @@ step "копирую проект в $PANEL_DIR"
 mkdir -p "$PANEL_DIR"
 cp -r "$SCRIPT_DIR/app.py" "$SCRIPT_DIR/templates" "$PANEL_DIR/"
 [[ -d "$SCRIPT_DIR/static" ]] && cp -r "$SCRIPT_DIR/static" "$PANEL_DIR/"
+if [[ -f "$SCRIPT_DIR/VERSION" ]]; then
+    cp "$SCRIPT_DIR/VERSION" "$PANEL_DIR/VERSION"
+else
+    # на случай запуска install.sh не из полного релиза, а из старой копии
+    # без файла VERSION — система обновлений просто покажет "неизвестно"
+    # вместо номера версии, ничего не ломается.
+    warn "файл VERSION не найден рядом с install.sh — проверка обновлений будет показывать текущую версию как 'неизвестно'"
+fi
 chown -R "$PANEL_USER":"$PANEL_USER" "$PANEL_DIR"
 
 step "создаю python venv и ставлю flask + gunicorn (может занять минуту)"

@@ -262,6 +262,7 @@
   <header>
     <h1>root@fileserver:~# samba-admin --panel</h1>
     <div class="row" style="gap:16px;">
+      <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener" title="исходный код на GitHub">[ GitHub · lukomsky85 ]</a>
       <div class="theme-picker" id="theme-picker" title="цветовая тема">
         <span class="theme-dot" data-theme="green" style="background:#39ff6a;" onclick="setTheme('green')"></span>
         <span class="theme-dot" data-theme="amber" style="background:#ffb000;" onclick="setTheme('amber')"></span>
@@ -478,6 +479,23 @@
         <button onclick="testSmtpSend()">[ отправить тестовое письмо ]</button>
       </div>
       <div class="output-box" id="smtp-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Обновление панели</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">
+        Проверяет последний релиз на
+        <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener">GitHub</a>
+        и сравнивает с версией, которая сейчас установлена.
+      </p>
+      <div id="update-status-body">
+        <p class="badge-off">жми «проверить обновления»</p>
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="checkForUpdate()">[ проверить обновления ]</button>
+        <button onclick="refreshUpdateLog()">[ показать журнал обновления ]</button>
+      </div>
+      <div class="output-box" id="update-log-output" style="display:none; margin-top:10px;"></div>
     </div>
 
     <div class="panel userlist">
@@ -1459,6 +1477,65 @@ async function testSmtpSend() {
     ? escapeHtml(data.output || 'OK')
     : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
   renderOutput('test_smtp_send ' + email, data);
+}
+
+async function checkForUpdate() {
+  const body = document.getElementById('update-status-body');
+  body.innerHTML = '<p class="badge-off">проверяю...</p>';
+  const res = await fetch('/api/check_update');
+  const data = await res.json();
+  const line = (data.output || '').split('\n').find(l => l.trim().startsWith('UPDATECHECK|'));
+  if (!line) {
+    body.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'не удалось проверить обновления')}</p>`;
+    return;
+  }
+  const parts = line.trim().split('|');
+  const [, status, current, latest, extra] = parts;
+  if (status === 'error') {
+    body.innerHTML = `
+      <p class="badge-off">установлена версия: ${escapeHtml(current)}</p>
+      <p class="line-fail">не удалось проверить обновления: ${escapeHtml(extra || '')}</p>
+    `;
+  } else if (status === 'uptodate') {
+    body.innerHTML = `<p class="badge-on">● установлена актуальная версия: ${escapeHtml(current)}</p>`;
+  } else if (status === 'available') {
+    body.innerHTML = `
+      <p class="badge-off">установлена версия: ${escapeHtml(current)}</p>
+      <p class="badge-on">● доступно обновление: <b>${escapeHtml(latest)}</b>
+        ${extra ? `(<a href="${escapeHtml(extra)}" target="_blank" rel="noopener">что нового</a>)` : ''}
+      </p>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="applyUpdate('${escapeHtml(latest)}')">[ обновить до ${escapeHtml(latest)} ]</button>
+      </div>
+    `;
+  }
+}
+
+async function applyUpdate(tag) {
+  if (!confirm(
+    'Обновить панель до версии ' + tag + '?\n\n' +
+    'Это скачает релиз с GitHub и запустит установщик заново поверх текущей ' +
+    'установки. Может занять несколько минут, панель на секунду перезапустится ' +
+    'в процессе — это нормально. Шары и локальные пользователи не затрагиваются.'
+  )) return;
+
+  const data = await post('/api/apply_update', {tag});
+  renderOutput('apply_update ' + tag, data);
+  if (data.ok) {
+    logLine('обновление запущено в фоне — следи за прогрессом через «показать журнал обновления»', 'line-cmd');
+    setTimeout(refreshUpdateLog, 3000);
+  }
+}
+
+async function refreshUpdateLog() {
+  const box = document.getElementById('update-log-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/update_log');
+  const data = await res.json();
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || '(пусто)')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
 }
 
 async function refreshAdStatus() {

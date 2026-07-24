@@ -185,7 +185,7 @@ def _login_register_success(ip):
 _READONLY_COMMANDS = {"list_users", "list_shares", "active_connections", "disk_usage"}
 
 
-def run_helper(args, stdin_text=None):
+def run_helper(args, stdin_text=None, timeout=30):
     """Запускает хелпер через sudo. Возвращает (ok, output).
 
     Пароли никогда не попадают в args (только через stdin_text), поэтому
@@ -200,7 +200,7 @@ def run_helper(args, stdin_text=None):
             input=stdin_text,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         ok = proc.returncode == 0
@@ -700,6 +700,78 @@ def api_ad_list_users():
 def api_ad_list_groups():
     ok, output = run_helper(["ad_list_groups"])
     return jsonify(ok=ok, output=output)
+
+
+UPDATE_TAG_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+UPDATE_LOG_PATH = "/var/log/sambapanel/update.log"
+
+
+@app.route("/api/check_update")
+@login_required
+def api_check_update():
+    ok, output = run_helper(["check_update"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/apply_update", methods=["POST"])
+@login_required
+def api_apply_update():
+    # Обновление запускается АСИНХРОННО (Popen, не subprocess.run) и
+    # намеренно "отвязано" от текущего запроса (start_new_session=True).
+    # Полная переустановка через install.sh (пакеты, systemd) может идти
+    # несколько минут — синхронно дождаться этого в рамках одного HTTP-
+    # запроса означало бы упереться сразу в несколько таймаутов подряд
+    # (nginx proxy_read_timeout, gunicorn --timeout), и раздувать их до
+    # неприличных величин ради одной редкой операции не хочется. Хуже
+    # того: install.sh делает `systemctl restart sambapanel` в процессе
+    # собственной работы — если бы обновление шло синхронно внутри
+    # текущего процесса панели, этот самый рестарт оборвал бы его
+    # самого на середине. Отвязанный процесс переживает это спокойно.
+    data = request.get_json(force=True)
+    tag = (data.get("tag") or "").strip()
+    if not tag or not UPDATE_TAG_RE.match(tag):
+        return jsonify(ok=False, output="ERROR: некорректный номер версии")
+
+    try:
+        os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
+        log_f = open(UPDATE_LOG_PATH, "a")
+        log_f.write(
+            f"\n\n=== Запуск обновления до {tag}, "
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} ===\n"
+        )
+        log_f.flush()
+        subprocess.Popen(
+            ["sudo", "-n", HELPER, "apply_update", tag],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return jsonify(ok=False, output=f"ERROR: не удалось запустить обновление: {e}")
+
+    audit_log(f"apply_update {tag}", True, "запущено в фоне")
+    return jsonify(
+        ok=True,
+        output=(
+            f"Обновление до {tag} запущено в фоне. Это может занять несколько минут "
+            f"(установка пакетов и т.п.) — панель может ненадолго перезапуститься "
+            f"посреди процесса, это ожидаемо. Смотри прогресс в журнале обновления ниже."
+        ),
+    )
+
+
+@app.route("/api/update_log")
+@login_required
+def api_update_log():
+    try:
+        with open(UPDATE_LOG_PATH) as f:
+            lines = f.readlines()
+        tail = lines[-200:]
+        return jsonify(ok=True, output="".join(tail))
+    except FileNotFoundError:
+        return jsonify(ok=True, output="(лога обновлений пока нет — обновление ещё не запускалось)")
+    except OSError as e:
+        return jsonify(ok=False, output=f"ERROR: не удалось прочитать лог обновления: {e}")
 
 
 @app.route("/api/disk_smart_summary")
