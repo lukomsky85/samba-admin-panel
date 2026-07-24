@@ -286,6 +286,7 @@
     <button class="tab-btn" id="tabbtn-disks" onclick="showTab('disks')">[ Диски ]</button>
     <button class="tab-btn" id="tabbtn-monitor" onclick="showTab('monitor')">[ Мониторинг ]</button>
     <button class="tab-btn" id="tabbtn-ad" onclick="showTab('ad')">[ Active Directory ]</button>
+    <button class="tab-btn" id="tabbtn-updates" onclick="showTab('updates')">[ Обновления ]</button>
   </div>
 
   <div class="grid tab-content tab-content-active" id="tab-shares">
@@ -500,23 +501,6 @@
       <div class="output-box" id="smtp-test-output" style="display:none; margin-top:10px;"></div>
     </div>
 
-    <div class="panel userlist" style="grid-column: 1 / -1;">
-      <h2>Обновление панели</h2>
-      <p class="modal-sub" style="margin:0 0 12px;">
-        Проверяет последний релиз на
-        <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener">GitHub</a>
-        и сравнивает с версией, которая сейчас установлена.
-      </p>
-      <div id="update-status-body">
-        <p class="badge-off">жми «проверить обновления»</p>
-      </div>
-      <div class="row" style="margin-top:10px; gap:10px;">
-        <button onclick="checkForUpdate()">[ проверить обновления ]</button>
-        <button onclick="refreshUpdateLog()">[ показать журнал обновления ]</button>
-      </div>
-      <div class="output-box" id="update-log-output" style="display:none; margin-top:10px;"></div>
-    </div>
-
     <div class="panel userlist">
       <h2>Активные подключения</h2>
       <div class="output-box" id="connections-output">
@@ -620,6 +604,25 @@
       <div class="row" style="margin-top:10px;">
         <button onclick="refreshAdGroups()">[ обновить ]</button>
       </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-updates">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Обновление панели</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">
+        Проверяет последний релиз на
+        <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener">GitHub</a>
+        и сравнивает с версией, которая сейчас установлена.
+      </p>
+      <div id="update-status-body">
+        <p class="badge-off">жми «проверить обновления»</p>
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="checkForUpdate()">[ проверить обновления ]</button>
+        <button onclick="refreshUpdateLog()">[ показать журнал обновления ]</button>
+      </div>
+      <div class="output-box" id="update-log-output" style="display:none; margin-top:10px;"></div>
     </div>
   </div>
 
@@ -2170,6 +2173,10 @@ function showTab(tabName) {
 
   if (tabName === 'ad') {
     refreshAdStatus();
+  }
+
+  if (tabName === 'updates') {
+    checkForUpdate();
   }
 }
 
