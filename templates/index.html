@@ -322,7 +322,14 @@
         <option value="local">Локальная Unix-группа</option>
         <option value="ad_group">Группа Active Directory</option>
         <option value="ad_users">Конкретные пользователи AD</option>
+        <option value="guest">Гостевой доступ (без пароля)</option>
       </select>
+
+      <div id="share-access-guest-block" style="display:none;">
+        <p class="modal-sub" style="margin:0 0 12px; color:var(--red);">
+          ⚠ Подключиться сможет кто угодно в сети без логина и пароля (ограничить можно только по IP/подсети ниже). Папка станет доступна на запись всем локальным процессам на сервере, не только через Samba. Не используй для чувствительных данных.
+        </p>
+      </div>
 
       <div id="share-access-local-block">
         <label for="share-group">группа с доступом</label>
@@ -418,6 +425,18 @@
         <button onclick="refreshDisks()">[ обновить ]</button>
       </div>
       <div class="output-box" id="diskdetails-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>ISO-образы</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">Монтируются только для чтения — это не ограничение панели, а свойство самого формата ISO9660: после создания образа в него физически нельзя писать. Монтирование действует до перезагрузки или ручного отключения (без персистентности через <code>/etc/fstab</code>).</p>
+      <div class="row" style="align-items:flex-start;">
+        <input id="iso-search-path" placeholder="/srv" value="/srv" style="flex:1;">
+        <button type="button" onclick="findIsoFiles()">[ найти ISO ]</button>
+      </div>
+      <div id="iso-list-body" style="margin-top:8px;">
+        <p class="badge-off">жми «найти ISO», чтобы просканировать папку</p>
+      </div>
     </div>
   </div>
 
@@ -730,7 +749,14 @@
         <option value="local">Локальная Unix-группа</option>
         <option value="ad_group">Группа Active Directory</option>
         <option value="ad_users">Конкретные пользователи AD</option>
+        <option value="guest">Гостевой доступ (без пароля)</option>
       </select>
+
+      <div id="group-modal-access-guest-block" style="display:none;">
+        <p class="modal-sub" style="margin:0 0 12px; color:var(--red);">
+          ⚠ Подключиться сможет кто угодно в сети без логина и пароля (ограничить можно только по IP/подсети шары). Папка станет доступна на запись всем локальным процессам на сервере, не только через Samba. Не используй для чувствительных данных.
+        </p>
+      </div>
 
       <div id="group-modal-access-local-block">
         <label for="group-modal-group">имя группы</label>
@@ -1289,7 +1315,9 @@ async function refreshShares() {
     }
     const auditLabel = auditOn ? ' · полный аудит: вкл' : '';
     let groupLabel;
-    if (group.startsWith('AD:')) {
+    if (group === 'GUEST') {
+      groupLabel = '⚠ ГОСТЕВОЙ ДОСТУП (без пароля)';
+    } else if (group.startsWith('AD:')) {
       groupLabel = 'AD-группа: ' + group.slice(3);
     } else if (group.startsWith('ADUSERS:')) {
       groupLabel = 'AD-пользователи: ' + group.slice(8).split(',').join(', ');
@@ -1668,6 +1696,8 @@ function onAccessTypeChange(prefix) {
   document.getElementById(prefix + '-access-local-block').style.display = type === 'local' ? 'block' : 'none';
   document.getElementById(prefix + '-access-adgroup-block').style.display = type === 'ad_group' ? 'block' : 'none';
   document.getElementById(prefix + '-access-adusers-block').style.display = type === 'ad_users' ? 'block' : 'none';
+  const guestBlock = document.getElementById(prefix + '-access-guest-block');
+  if (guestBlock) guestBlock.style.display = type === 'guest' ? 'block' : 'none';
 }
 
 function computeGroupValue(prefix) {
@@ -1682,6 +1712,9 @@ function computeGroupValue(prefix) {
   if (type === 'ad_users') {
     const selected = Array.from(adUserSelections[prefix] || []);
     return selected.length ? 'ADUSERS:' + selected.join(',') : '';
+  }
+  if (type === 'guest') {
+    return 'GUEST';
   }
   return '';
 }
@@ -1782,7 +1815,8 @@ function openGroupModal(name, groupB64) {
   groupModalState.name = name;
   document.getElementById('group-modal-sharename').textContent = name;
   let type = 'local', localValue = currentGroup;
-  if (currentGroup.startsWith('AD:')) { type = 'ad_group'; }
+  if (currentGroup === 'GUEST') { type = 'guest'; }
+  else if (currentGroup.startsWith('AD:')) { type = 'ad_group'; }
   else if (currentGroup.startsWith('ADUSERS:')) { type = 'ad_users'; }
   document.getElementById('group-modal-access-type').value = type;
   document.getElementById('group-modal-group').value = type === 'local' ? localValue : 'sharegroup';
@@ -1957,6 +1991,58 @@ async function refreshDisks() {
     `;
     body.appendChild(div);
   });
+}
+
+async function findIsoFiles() {
+  const path = document.getElementById('iso-search-path').value.trim() || '/srv';
+  const body = document.getElementById('iso-list-body');
+  body.innerHTML = '<p class="badge-off">ищу...</p>';
+  const res = await fetch('/api/list_iso_files', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path})
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    body.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ISOFILE|'));
+  if (lines.length === 0) {
+    body.innerHTML = '<p class="badge-off">ISO-файлов не найдено в этой папке</p>';
+    return;
+  }
+  body.innerHTML = '';
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 3) return;
+    const [, pathB64, size] = parts;
+    let isoPath;
+    try { isoPath = b64DecodeUtf8(pathB64); } catch (e) { return; }
+    const row = document.createElement('div');
+    row.className = 'disk-row row-in';
+    const inputId = 'iso-mount-' + Math.random().toString(36).slice(2, 9);
+    row.innerHTML = `
+      <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <span class="badge-on" style="overflow-wrap:anywhere;">${escapeHtml(isoPath)} <span style="color:var(--fg-dim); font-size:12px;">(${fmtBytesG(size)})</span></span>
+        <span class="row" style="gap:6px;">
+          <input id="${inputId}" placeholder="/mnt/iso" style="width:160px; margin:0;">
+          <button onclick="mountIso('${pathB64}', '${inputId}')">[ смонтировать ]</button>
+        </span>
+      </div>
+    `;
+    body.appendChild(row);
+  });
+}
+
+async function mountIso(isoPathB64, inputId) {
+  let isoPath;
+  try { isoPath = b64DecodeUtf8(isoPathB64); } catch (e) { logLine('ERROR: не удалось прочитать путь к ISO', 'line-err'); return; }
+  const mountpoint = document.getElementById(inputId).value.trim();
+  if (!mountpoint) { logLine('ERROR: укажи точку монтирования', 'line-err'); return; }
+  const data = await post('/api/mount_iso', {iso_path: isoPath, mountpoint});
+  renderOutput('mount_iso ' + isoPath + ' ' + mountpoint, data);
+  if (data.ok) refreshDisks();
 }
 
 async function showSmartDetails(device) {

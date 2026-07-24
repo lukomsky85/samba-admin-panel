@@ -84,7 +84,8 @@ validate_share_path() {
 }
 
 validate_share_group() {
-    # Три варианта значения:
+    # Четыре варианта значения:
+    #  - "GUEST" -> гостевой доступ без пароля (см. предупреждения в create_share)
     #  - обычное имя  -> локальная Unix-группа (как раньше)
     #  - "AD:группа" или "AD:ДОМЕН\группа" -> группа Active Directory
     #    (резолвится через winbind/NSS, не создаётся через groupadd)
@@ -93,7 +94,9 @@ validate_share_group() {
     # Пробелы в AD-именах намеренно не поддерживаются — избегаем возни с
     # кавычками в smb.conf для строк с пробелами.
     local g="$1"
-    if [[ "$g" == AD:* ]]; then
+    if [[ "$g" == "GUEST" ]]; then
+        : # валидно как есть, никаких дополнительных проверок не требуется
+    elif [[ "$g" == AD:* ]]; then
         local adg="${g#AD:}"
         if [[ -z "$adg" || ! "$adg" =~ ^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$ ]]; then
             echo "ERROR: некорректное имя AD-группы (без пробелов; допустимо 'группа' или 'ДОМЕН\\группа')" >&2
@@ -286,19 +289,29 @@ regenerate_conf() {
             echo "   path = $s_path"
             echo "   browseable = yes"
             echo "   writable = $s_writable"
-            echo "   guest ok = no"
-            # Тип группы закодирован префиксом в самом значении:
+            # Тип доступа закодирован в значении поля группы:
+            # "GUEST" — гостевой доступ без пароля (см. предупреждение ниже),
             # "AD:группа" — группа Active Directory (резолвится через winbind),
             # "ADUSERS:user1,user2" — конкретные пользователи AD без общей группы,
             # без префикса — обычная локальная Unix-группа (как было раньше).
-            if [[ "$s_group" == AD:* ]]; then
+            if [[ "$s_group" == "GUEST" ]]; then
+                # Гостевой доступ — сознательно БЕЗ "valid users"/"force group":
+                # весь смысл гостевой шары в том, что подключиться может кто
+                # угодно без учётной записи. Комбинировать guest ok с valid
+                # users бессмысленно и вводит в заблуждение (гостевая сессия
+                # не проходит проверку по группе всё равно).
+                echo "   guest ok = yes"
+            elif [[ "$s_group" == AD:* ]]; then
                 ad_group="${s_group#AD:}"
+                echo "   guest ok = no"
                 echo "   valid users = @${ad_group}"
                 echo "   force group = ${ad_group}"
             elif [[ "$s_group" == ADUSERS:* ]]; then
                 ad_users="${s_group#ADUSERS:}"
+                echo "   guest ok = no"
                 echo "   valid users = ${ad_users//,/, }"
             else
+                echo "   guest ok = no"
                 echo "   valid users = @$s_group"
                 echo "   force group = $s_group"
             fi
@@ -522,10 +535,17 @@ case "$cmd" in
 
     # Определяем, чем владеть папке шары: локальная Unix-группа (создаём
     # через groupadd, как раньше), AD-группа (резолвится через NSS/winbind,
-    # НЕ создаётся локально), или набор конкретных AD-пользователей (тогда
+    # НЕ создаётся локально), набор конкретных AD-пользователей (тогда
     # владение группой не имеет смысла — доступ регулируется только через
-    # valid users, папка остаётся под root:root).
-    if [[ "$group" == AD:* ]]; then
+    # valid users, папка остаётся под root:root), или гостевой доступ (папка
+    # должна быть доступна на запись анонимному пользователю, за которого
+    # Samba выдаёт себя при guest-подключении — обычно это системный "nobody").
+    chmod_mode="2775"
+    if [[ "$group" == "GUEST" ]]; then
+        chown_target="nogroup"
+        chmod_mode="2777"
+        chown_note=" (ГОСТЕВОЙ доступ — папка открыта на запись ВСЕМ локальным процессам, не только Samba; это ожидаемо для guest-шары, но не для чувствительных данных)"
+    elif [[ "$group" == AD:* ]]; then
         ad_group_name="${group#AD:}"
         if ! command -v getent &>/dev/null || ! getent group "$ad_group_name" &>/dev/null; then
             echo "ERROR: AD-группа '$ad_group_name' не резолвится через NSS — сервер точно присоединён к домену и winbind запущен? Проверь вкладку Active Directory" >&2
@@ -545,9 +565,9 @@ case "$cmd" in
     log "mkdir -p $path"
     mkdir -p "$path"
 
-    log "chown root:$chown_target $path$chown_note && chmod 2775 $path"
+    log "chown root:$chown_target $path$chown_note && chmod $chmod_mode $path"
     chown root:"$chown_target" "$path"
-    chmod 2775 "$path"
+    chmod "$chmod_mode" "$path"
 
     if [[ "$recycle" == "yes" ]]; then
         mkdir -p "$path/.recycle"
@@ -798,7 +818,11 @@ case "$cmd" in
     line="$(grep "^${name}|" "$SHARES_DB")"
     IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
 
-    if [[ "$new_group" == AD:* ]]; then
+    chmod_mode="2775"
+    if [[ "$new_group" == "GUEST" ]]; then
+        chown_target="nogroup"
+        chmod_mode="2777"
+    elif [[ "$new_group" == AD:* ]]; then
         ad_group_name="${new_group#AD:}"
         if ! getent group "$ad_group_name" &>/dev/null; then
             echo "ERROR: AD-группа '$ad_group_name' не резолвится через NSS — сервер присоединён к домену и winbind запущен?" >&2
@@ -813,6 +837,7 @@ case "$cmd" in
     fi
 
     chown root:"$chown_target" "$p" 2>/dev/null || true
+    chmod "$chmod_mode" "$p" 2>/dev/null || true
     [[ -d "$p/.recycle" ]] && { chown root:"$chown_target" "$p/.recycle" 2>/dev/null || true; }
     [[ -d "$p/.quarantine" ]] && { chown root:"$chown_target" "$p/.quarantine" 2>/dev/null || true; }
 
@@ -1140,7 +1165,7 @@ case "$cmd" in
         mountpoint="$(echo "$line" | grep -oP '(?<=MOUNTPOINT=")[^"]*')"
         dtype="$(echo "$line" | grep -oP '(?<=TYPE=")[^"]*')"
         model="$(echo "$line" | grep -oP '(?<=MODEL=")[^"]*')"
-        [[ "$dtype" != "disk" && "$dtype" != "part" && "$dtype" != "lvm" ]] && continue
+        [[ "$dtype" != "disk" && "$dtype" != "part" && "$dtype" != "lvm" && "$dtype" != "loop" ]] && continue
         model_b64="$(printf '%s' "$model" | base64 -w0)"
         mount_b64="$(printf '%s' "$mountpoint" | base64 -w0)"
         echo "BLOCKDEV|${dpath}|${size}|${fstype:-none}|${mount_b64}|${dtype}|${model_b64}"
@@ -1829,6 +1854,73 @@ EOF
     log "OK: '$mountpoint' отмонтирован"
     ;;
 
+  list_iso_files)
+    # Использование: list_iso_files <path>
+    # Только чтение: ищет .iso файлы внутри указанной папки (не рекурсивно
+    # глубже пары уровней — иначе поиск по всему /srv может быть небыстрым).
+    path="${2:-/srv}"
+    [[ -z "$path" ]] && path="/srv"
+
+    if [[ "$path" != "/" ]]; then
+        if [[ ! "$path" =~ $SHAREPATH_RE ]]; then
+            echo "ERROR: некорректный путь" >&2
+            exit 1
+        fi
+        if [[ "$path" == *".."* ]]; then
+            echo "ERROR: путь не может содержать '..'" >&2
+            exit 1
+        fi
+    fi
+    if [[ ! -d "$path" ]]; then
+        echo "ERROR: папка '$path' не существует" >&2
+        exit 1
+    fi
+
+    find "$path" -maxdepth 3 -iname "*.iso" -type f 2>/dev/null | sort | while read -r f; do
+        f_b64="$(printf '%s' "$f" | base64 -w0)"
+        size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+        echo "ISOFILE|${f_b64}|${size}"
+    done || true
+    ;;
+
+  mount_iso)
+    # Использование: mount_iso <iso_path> <mountpoint>
+    # ISO-образы монтируются ТОЛЬКО для чтения (loop-устройство) — это не
+    # ограничение панели, а физическое свойство формата ISO9660, в него
+    # физически нельзя писать после создания образа.
+    iso_path="${2:-}"; mountpoint="${3:-}"
+
+    if [[ -z "$iso_path" || ! -f "$iso_path" ]]; then
+        echo "ERROR: файл '$iso_path' не найден" >&2
+        exit 1
+    fi
+    if [[ "${iso_path,,}" != *.iso ]]; then
+        echo "ERROR: файл должен иметь расширение .iso" >&2
+        exit 1
+    fi
+    if [[ "$iso_path" == *".."* ]]; then
+        echo "ERROR: путь не может содержать '..'" >&2
+        exit 1
+    fi
+    validate_mount_path "$mountpoint"
+
+    if mountpoint -q "$mountpoint" 2>/dev/null; then
+        echo "ERROR: '$mountpoint' уже занята другим монтированием" >&2
+        exit 1
+    fi
+
+    log "mkdir -p $mountpoint"
+    mkdir -p "$mountpoint"
+
+    log "mount -o loop,ro $iso_path $mountpoint"
+    if ! mount -o loop,ro "$iso_path" "$mountpoint"; then
+        echo "ERROR: не удалось смонтировать ISO — проверь, что файл не повреждён и это реально образ ISO9660" >&2
+        exit 1
+    fi
+
+    log "OK: ISO '$iso_path' смонтирован в '$mountpoint' (только чтение)"
+    ;;
+
   *)
     echo "ERROR: неизвестная команда '$cmd'" >&2
     echo "Доступные команды: create_user, remove_user, set_samba_password, toggle_share_access, list_users," >&2
@@ -1838,6 +1930,7 @@ EOF
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
+    echo "                   list_iso_files, mount_iso (группа шары также может быть 'GUEST' — без пароля)," >&2
     echo "                   get_notify_config, set_notify_config, test_notify," >&2
     echo "                   get_smtp_config, set_smtp_config, test_smtp_send," >&2
     echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups," >&2

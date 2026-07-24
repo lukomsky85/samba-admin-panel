@@ -255,9 +255,11 @@ AD_GROUP_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$")
 
 
 def validate_share_group_field(group):
-    """Разрешает обычное локальное имя группы, 'AD:группа' или
-    'ADUSERS:user1,user2'. Возвращает (ok, normalized)."""
+    """Разрешает 'GUEST' (гостевой доступ без пароля), обычное локальное имя
+    группы, 'AD:группа' или 'ADUSERS:user1,user2'. Возвращает (ok, normalized)."""
     group = (group or "").strip()
+    if group == "GUEST":
+        return True, "GUEST"
     if group.startswith("AD:"):
         adg = group[3:].strip()
         if not adg or not AD_GROUP_TOKEN_RE.match(adg):
@@ -821,6 +823,35 @@ def api_unmount_disk():
         return jsonify(ok=False, output="ERROR: недопустимая точка монтирования")
 
     ok, output = run_helper(["unmount_disk", mountpoint, remove_fstab])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/list_iso_files", methods=["POST"])
+@login_required
+def api_list_iso_files():
+    data = request.get_json(force=True)
+    path = (data.get("path") or "/srv").strip() or "/srv"
+
+    if path != "/" and (not SHAREPATH_RE.match(path) or ".." in path):
+        return jsonify(ok=False, output="ERROR: недопустимый путь")
+
+    ok, output = run_helper(["list_iso_files", path])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/mount_iso", methods=["POST"])
+@login_required
+def api_mount_iso():
+    data = request.get_json(force=True)
+    iso_path = (data.get("iso_path") or "").strip()
+    mountpoint = (data.get("mountpoint") or "").strip()
+
+    if not iso_path or ".." in iso_path or not SHAREPATH_RE.match(iso_path) or not iso_path.lower().endswith(".iso"):
+        return jsonify(ok=False, output="ERROR: недопустимый путь к ISO-файлу")
+    if not SHAREPATH_RE.match(mountpoint) or ".." in mountpoint:
+        return jsonify(ok=False, output="ERROR: недопустимая точка монтирования")
+
+    ok, output = run_helper(["mount_iso", iso_path, mountpoint])
     return jsonify(ok=ok, output=output)
 
 
