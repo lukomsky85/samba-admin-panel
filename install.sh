@@ -325,13 +325,22 @@ chmod 600 "$SERVICE_DST"   # там пароль в plaintext — закрыва
 
 systemctl daemon-reload
 systemctl enable --now smbd >/dev/null
-systemctl enable --now sambapanel
+# ВАЖНО: именно restart, а не enable --now. "enable --now" на уже работающем
+# сервисе — no-op в плане перезапуска: файлы (app.py, templates и т.д.)
+# копируются на диск заново, но уже запущенный процесс gunicorn продолжит
+# работать со старым кодом в памяти, пока его явно не перезапустить. Это
+# особенно важно при повторном запуске install.sh (переустановка/обновление
+# через панель) — при первой же установке разницы нет (сервис ещё не
+# запущен), но именно "второй и последующие разы" — это ровно тот сценарий,
+# ради которого install.sh вообще можно перезапускать.
+systemctl enable sambapanel >/dev/null
+systemctl restart sambapanel
 
 sleep 1
 if ! systemctl is-active --quiet sambapanel; then
     warn "сервис sambapanel не поднялся, смотри логи: journalctl -u sambapanel -n 50"
 else
-    step "сервис sambapanel запущен"
+    step "сервис sambapanel запущен (перезапущен, новый код применён)"
 fi
 
 # ---------------------------------------------------------------------------
