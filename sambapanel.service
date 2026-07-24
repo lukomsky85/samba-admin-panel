@@ -24,6 +24,20 @@ ExecStart=/opt/sambapanel/venv/bin/gunicorn --worker-class gthread --workers 1 -
 Restart=on-failure
 RestartSec=3
 
+# KillMode=process (а не дефолтный control-group) — критично для механизма
+# обновления панели: apply_update запускает install.sh отвязанным процессом
+# (Popen с start_new_session=True в Python) именно для того, чтобы рестарт
+# ЭТОГО САМОГО сервиса, который install.sh делает в конце своей работы, не
+# убил сам процесс обновления. НО: start_new_session создаёт новую POSIX-
+# сессию — это защищает только от сигналов уровня терминала (SIGHUP), а
+# systemd с дефолтным KillMode=control-group при остановке/рестарте юнита
+# убивает ВСЕ процессы в его control-group, независимо от того, в какой они
+# сессии. Реально словили это на практике: лог обновления обрывался ровно
+# в момент рестарта сервиса — процесс обновления убивало вместе со старым
+# gunicorn. KillMode=process ограничивает область поражения только главным
+# отслеживаемым процессом (gunicorn), не трогая его отвязанных потомков.
+KillMode=process
+
 # Немного harden'а, не мешая функциональности (sudo вызывается отдельно)
 NoNewPrivileges=false
 ProtectSystem=false

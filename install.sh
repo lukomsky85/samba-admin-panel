@@ -263,6 +263,14 @@ else
 fi
 chown -R "$PANEL_USER":"$PANEL_USER" "$PANEL_DIR"
 
+# Staging-папка для загрузки ISO-образов через браузер (кусками, см. раздел
+# "Диски" → "ISO-образы" → "загрузить"). Файлы могут быть очень большими
+# (сотни ГБ) — временно лежат здесь, пока идёт загрузка, а по завершении
+# root-хелпер переносит готовый файл в выбранную папку назначения.
+mkdir -p "$PANEL_DIR/uploads"
+chown "$PANEL_USER":"$PANEL_USER" "$PANEL_DIR/uploads"
+chmod 750 "$PANEL_DIR/uploads"
+
 step "создаю python venv и ставлю flask + gunicorn (может занять минуту)"
 if [[ ! -x "$PANEL_DIR/venv/bin/python3" ]]; then
     sudo -u "$PANEL_USER" python3 -m venv "$PANEL_DIR/venv"

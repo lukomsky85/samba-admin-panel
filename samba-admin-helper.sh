@@ -1943,6 +1943,114 @@ EOF
     log "OK: ISO '$iso_path' смонтирован в '$mountpoint' (только чтение)"
     ;;
 
+  iso_finalize_upload)
+    # Использование: iso_finalize_upload <part_path> <dest_dir> <dest_filename>
+    # Вызывается ТОЛЬКО когда панель не может писать в dest_dir напрямую
+    # (папка шары принадлежит конкретной Unix-группе/AD-группе, в которую
+    # www-panel не входит) — файл уже полностью докачан в общую staging-
+    # папку (/opt/sambapanel/uploads, из владения www-panel, настроена один
+    # раз в install.sh), тут только переносим его на настоящее место с
+    # правильными правами. Если staging и dest_dir на одной файловой системе
+    # — это мгновенный rename; если на разных — реальное копирование (тогда
+    # временно нужно места в обоих местах, Flask это уже проверил заранее).
+    part_path="${2:-}"; dest_dir="${3:-}"; dest_filename="${4:-}"
+
+    if [[ -z "$part_path" || ! -f "$part_path" ]]; then
+        echo "ERROR: временный файл '$part_path' не найден" >&2
+        exit 1
+    fi
+    if [[ "$part_path" != /opt/sambapanel/uploads/* ]]; then
+        echo "ERROR: временный файл должен находиться в служебной папке загрузок" >&2
+        exit 1
+    fi
+    validate_share_path "$dest_dir"
+    if [[ ! -d "$dest_dir" ]]; then
+        echo "ERROR: папка назначения '$dest_dir' не существует" >&2
+        exit 1
+    fi
+    if [[ -z "$dest_filename" || "$dest_filename" == *".."* || "$dest_filename" == */* ]]; then
+        echo "ERROR: недопустимое имя файла назначения" >&2
+        exit 1
+    fi
+    if [[ "${dest_filename,,}" != *.iso ]]; then
+        echo "ERROR: файл должен иметь расширение .iso" >&2
+        exit 1
+    fi
+
+    final_path="${dest_dir}/${dest_filename}"
+    if [[ -e "$final_path" ]]; then
+        echo "ERROR: файл '$final_path' уже существует — удали или переименуй существующий, если нужно заменить" >&2
+        exit 1
+    fi
+
+    log "перемещаю $part_path -> $final_path"
+    if ! mv "$part_path" "$final_path"; then
+        echo "ERROR: не удалось перенести файл в $final_path" >&2
+        exit 1
+    fi
+    chown root:root "$final_path"
+    chmod 644 "$final_path"
+
+    log "OK: ISO '$dest_filename' загружен и перемещён в $dest_dir ($(du -h "$final_path" | cut -f1))"
+    ;;
+
+  iso_finalize_upload)
+    # Использование: iso_finalize_upload <temp_path> <dest_dir> <dest_filename>
+    # Переносит уже полностью собранный из кусков файл (загрузка большого
+    # ISO через браузер идёт кусками в staging-папку панели, где www-panel
+    # имеет право писать) в выбранную папку назначения — там могут быть
+    # более строгие права (папка шары и т.п.), отсюда нужен root.
+    UPLOAD_STAGING_DIR="/opt/sambapanel/uploads"
+    temp_path="${2:-}"; dest_dir="${3:-}"; dest_filename="${4:-}"
+
+    # temp_path обязан реально лежать внутри staging-папки — иначе это была
+    # бы возможность попросить root перенести произвольный файл на сервере.
+    case "$temp_path" in
+        "$UPLOAD_STAGING_DIR"/*) ;;
+        *)
+            echo "ERROR: временный файл должен находиться в $UPLOAD_STAGING_DIR" >&2
+            exit 1
+            ;;
+    esac
+    if [[ "$temp_path" == *".."* ]]; then
+        echo "ERROR: путь не может содержать '..'" >&2
+        exit 1
+    fi
+    if [[ ! -f "$temp_path" ]]; then
+        echo "ERROR: временный файл '$temp_path' не найден (загрузка ещё не завершена или сессия устарела)" >&2
+        exit 1
+    fi
+
+    if [[ ! "$dest_dir" =~ $SHAREPATH_RE ]] || [[ "$dest_dir" == *".."* ]]; then
+        echo "ERROR: недопустимая папка назначения" >&2
+        exit 1
+    fi
+    if [[ -z "$dest_filename" || "$dest_filename" == */* || "$dest_filename" == *".."* || "${dest_filename,,}" != *.iso ]]; then
+        echo "ERROR: недопустимое имя файла (должно оканчиваться на .iso, без путей/слешей)" >&2
+        exit 1
+    fi
+
+    mkdir -p "$dest_dir"
+    dest_path="${dest_dir%/}/${dest_filename}"
+    if [[ -e "$dest_path" ]]; then
+        echo "ERROR: файл '$dest_path' уже существует — удали его или выбери другое имя" >&2
+        exit 1
+    fi
+
+    # mv сам разберётся: staging и назначение на одной файловой системе —
+    # мгновенное переименование; на разных — реальное копирование байт (для
+    # файла на сотни ГБ это тоже займёт время — неизбежное следствие
+    # физического перемещения данных между разными дисками).
+    log "переношу загруженный файл в $dest_path (может занять время, если staging и назначение на разных дисках)"
+    if ! mv "$temp_path" "$dest_path"; then
+        echo "ERROR: не удалось перенести файл в $dest_path" >&2
+        exit 1
+    fi
+    chmod 644 "$dest_path"
+
+    log "OK: файл '$dest_filename' перенесён в '$dest_dir'"
+    ;;
+
   *)
     echo "ERROR: неизвестная команда '$cmd'" >&2
     echo "Доступные команды: create_user, remove_user, set_samba_password, toggle_share_access, list_users," >&2
@@ -1952,7 +2060,7 @@ EOF
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
-    echo "                   list_iso_files, mount_iso (группа шары также может быть 'GUEST' — без пароля)," >&2
+    echo "                   list_iso_files, mount_iso, iso_finalize_upload (группа шары также может быть 'GUEST' — без пароля)," >&2
     echo "                   get_notify_config, set_notify_config, test_notify," >&2
     echo "                   get_smtp_config, set_smtp_config, test_smtp_send," >&2
     echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups," >&2

@@ -15,11 +15,14 @@ sambapanel — маленькая веб-панель в стиле термин
 
 import base64
 import ipaddress
+import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from functools import wraps
@@ -854,6 +857,258 @@ def api_mount_iso():
 
     ok, output = run_helper(["mount_iso", iso_path, mountpoint])
     return jsonify(ok=ok, output=output)
+
+
+# --- Загрузка больших ISO-образов через браузер (кусками, с докачкой) ---
+#
+# Обычная форма с одним запросом на весь файл не подходит: образы могут
+# быть на сотни ГБ, а таймаут воркера gunicorn (120с) и вообще надёжность
+# передачи по сети такого объёма за один запрос не гарантированы — любой
+# обрыв соединения означал бы начинать заново. Вместо этого JS режет файл
+# на куски (~10 МБ), каждый кусок — отдельный запрос по смещению в байтах
+# (идемпотентно: повторная отправка того же куска ничего не портит, просто
+# перезаписывает те же байты по тому же месту). Сессия сохраняется в JSON
+# рядом — переживает даже перезапуск самой панели, докачку можно продолжить.
+
+UPLOAD_STAGING_DIR = "/opt/sambapanel/uploads"
+ISO_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,200}\.iso$", re.IGNORECASE)
+
+
+def _upload_meta_path(session_id):
+    # session_id уже проверен на безопасный алфавит (uuid4 hex) до вызова —
+    # но на всякий случай не подставляем его в путь без базовой проверки.
+    safe_id = re.sub(r"[^a-f0-9]", "", session_id.lower())
+    return os.path.join(UPLOAD_STAGING_DIR, f"{safe_id}.json")
+
+
+def _load_upload_meta(session_id):
+    path = _upload_meta_path(session_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _save_upload_meta(session_id, meta):
+    with open(_upload_meta_path(session_id), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+
+
+def _remove_upload_meta(session_id):
+    try:
+        os.remove(_upload_meta_path(session_id))
+    except OSError:
+        pass
+
+
+@app.route("/api/iso_upload_find_resumable", methods=["POST"])
+@login_required
+def api_iso_upload_find_resumable():
+    """Ищет уже начатую, но не завершённую сессию для того же файла (по
+    имени+размеру+папке назначения) — чтобы после перезагрузки страницы или
+    обрыва связи докачка продолжилась, а не началась с нуля."""
+    data = request.get_json(force=True)
+    filename = (data.get("filename") or "").strip()
+    dest_dir = (data.get("dest_dir") or "").strip()
+    try:
+        total_size = int(data.get("total_size") or 0)
+    except (TypeError, ValueError):
+        total_size = 0
+
+    try:
+        entries = os.listdir(UPLOAD_STAGING_DIR)
+    except OSError:
+        entries = []
+
+    for entry in entries:
+        if not entry.endswith(".json"):
+            continue
+        session_id = entry[:-5]
+        meta = _load_upload_meta(session_id)
+        if not meta:
+            continue
+        if (meta.get("filename") == filename and meta.get("dest_dir") == dest_dir
+                and meta.get("total_size") == total_size):
+            part_path = meta.get("part_path", "")
+            bytes_received = os.path.getsize(part_path) if os.path.isfile(part_path) else 0
+            return jsonify(ok=True, session_id=session_id, bytes_received=bytes_received)
+
+    return jsonify(ok=True, session_id=None, bytes_received=0)
+
+
+@app.route("/api/iso_upload_init", methods=["POST"])
+@login_required
+def api_iso_upload_init():
+    data = request.get_json(force=True)
+    filename = (data.get("filename") or "").strip()
+    dest_dir = (data.get("dest_dir") or "").strip()
+    try:
+        total_size = int(data.get("total_size") or 0)
+    except (TypeError, ValueError):
+        total_size = 0
+
+    if not ISO_FILENAME_RE.match(filename):
+        return jsonify(ok=False, output="ERROR: имя файла должно оканчиваться на .iso, без путей")
+    if not SHAREPATH_RE.match(dest_dir) or ".." in dest_dir:
+        return jsonify(ok=False, output="ERROR: недопустимая папка назначения")
+    if total_size <= 0:
+        return jsonify(ok=False, output="ERROR: некорректный размер файла")
+
+    # Пишем сразу в папку назначения, если панель туда может писать напрямую
+    # — тогда финализация будет мгновенным переименованием на месте, без
+    # второй копии байт и без необходимости в root. Если нет (например,
+    # папка шары с правами под конкретную Unix-группу, в которую www-panel
+    # не входит) — используем общую staging-папку, а перенос в конце делает
+    # root-хелпер (при этом временно нужно места в ДВУХ местах сразу).
+    direct_write_ok = os.path.isdir(dest_dir) and os.access(dest_dir, os.W_OK)
+    staging_dir = dest_dir if direct_write_ok else UPLOAD_STAGING_DIR
+
+    try:
+        usage = shutil.disk_usage(staging_dir)
+    except OSError as e:
+        return jsonify(ok=False, output=f"ERROR: не удалось проверить свободное место в {staging_dir}: {e}")
+
+    gb = 1024 ** 3
+    if usage.free < total_size:
+        return jsonify(ok=False, output=(
+            f"ERROR: недостаточно места в {staging_dir} — свободно "
+            f"{usage.free / gb:.1f} ГБ, нужно {total_size / gb:.1f} ГБ"
+        ))
+
+    if not direct_write_ok:
+        dest_check_path = dest_dir if os.path.isdir(dest_dir) else (os.path.dirname(dest_dir.rstrip("/")) or "/")
+        try:
+            dest_usage = shutil.disk_usage(dest_check_path)
+        except OSError as e:
+            return jsonify(ok=False, output=f"ERROR: не удалось проверить свободное место в {dest_dir}: {e}")
+        if dest_usage.free < total_size:
+            return jsonify(ok=False, output=(
+                f"ERROR: недостаточно места в конечной папке {dest_dir} — свободно "
+                f"{dest_usage.free / gb:.1f} ГБ, нужно {total_size / gb:.1f} ГБ "
+                f"(панель не может писать туда напрямую, придётся делать отдельную копию)"
+            ))
+
+    session_id = uuid.uuid4().hex
+    part_path = os.path.join(staging_dir, f".uploading-{session_id}.part")
+
+    try:
+        os.makedirs(staging_dir, exist_ok=True)
+        with open(part_path, "wb"):
+            pass
+    except OSError as e:
+        return jsonify(ok=False, output=f"ERROR: не удалось создать временный файл в {staging_dir}: {e}")
+
+    meta = {
+        "filename": filename,
+        "dest_dir": dest_dir,
+        "dest_filename": filename,
+        "total_size": total_size,
+        "part_path": part_path,
+        "direct_write": direct_write_ok,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_upload_meta(session_id, meta)
+
+    return jsonify(ok=True, session_id=session_id, direct_write=direct_write_ok)
+
+
+@app.route("/api/iso_upload_chunk", methods=["POST"])
+@login_required
+def api_iso_upload_chunk():
+    session_id = request.args.get("session_id", "")
+    try:
+        offset = int(request.args.get("offset", "-1"))
+    except ValueError:
+        offset = -1
+
+    if not re.match(r"^[a-f0-9]{32}$", session_id) or offset < 0:
+        return jsonify(ok=False, output="ERROR: некорректные параметры куска"), 400
+
+    meta = _load_upload_meta(session_id)
+    if not meta:
+        return jsonify(ok=False, output="ERROR: сессия загрузки не найдена (истекла или отменена)"), 404
+
+    chunk_data = request.get_data()
+    if not chunk_data:
+        return jsonify(ok=False, output="ERROR: пустой кусок данных"), 400
+
+    part_path = meta["part_path"]
+    try:
+        # r+b, а не ab — пишем ИМЕННО по смещению, а не всегда в конец файла.
+        # Это делает повторную отправку того же куска (после обрыва связи,
+        # когда клиент не дождался ответа, хотя запись уже прошла) полностью
+        # безопасной: те же самые байты просто лягут на то же самое место
+        # ещё раз, файл не удвоится и не испортится.
+        with open(part_path, "r+b") as f:
+            f.seek(offset)
+            f.write(chunk_data)
+    except OSError as e:
+        return jsonify(ok=False, output=f"ERROR: не удалось записать кусок: {e}"), 500
+
+    bytes_received = os.path.getsize(part_path)
+    return jsonify(ok=True, bytes_received=bytes_received)
+
+
+@app.route("/api/iso_upload_finish", methods=["POST"])
+@login_required
+def api_iso_upload_finish():
+    data = request.get_json(force=True)
+    session_id = (data.get("session_id") or "").strip()
+
+    meta = _load_upload_meta(session_id)
+    if not meta:
+        return jsonify(ok=False, output="ERROR: сессия загрузки не найдена")
+
+    part_path = meta["part_path"]
+    total_size = meta["total_size"]
+    dest_dir = meta["dest_dir"]
+    dest_filename = meta["dest_filename"]
+
+    if not os.path.isfile(part_path):
+        return jsonify(ok=False, output="ERROR: временный файл пропал — сессия испорчена, начни загрузку заново")
+
+    actual_size = os.path.getsize(part_path)
+    if actual_size != total_size:
+        return jsonify(ok=False, output=(
+            f"ERROR: получено {actual_size} из {total_size} байт — загрузка ещё не завершена полностью"
+        ))
+
+    if meta.get("direct_write"):
+        final_path = os.path.join(dest_dir, dest_filename)
+        if os.path.exists(final_path):
+            return jsonify(ok=False, output=f"ERROR: файл '{final_path}' уже существует")
+        try:
+            os.rename(part_path, final_path)
+        except OSError as e:
+            return jsonify(ok=False, output=f"ERROR: не удалось переименовать файл: {e}")
+        _remove_upload_meta(session_id)
+        return jsonify(ok=True, output=f"OK: файл сохранён в {final_path}")
+
+    ok, output = run_helper(["iso_finalize_upload", part_path, dest_dir, dest_filename])
+    if ok:
+        _remove_upload_meta(session_id)
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/iso_upload_cancel", methods=["POST"])
+@login_required
+def api_iso_upload_cancel():
+    data = request.get_json(force=True)
+    session_id = (data.get("session_id") or "").strip()
+
+    meta = _load_upload_meta(session_id)
+    if meta:
+        part_path = meta.get("part_path", "")
+        if part_path and os.path.isfile(part_path):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+    _remove_upload_meta(session_id)
+    return jsonify(ok=True, output="Загрузка отменена, временные файлы убраны")
 
 
 @app.route("/api/audit_log")

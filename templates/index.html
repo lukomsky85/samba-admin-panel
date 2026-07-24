@@ -438,6 +438,32 @@
       <div id="iso-list-body" style="margin-top:8px;">
         <p class="badge-off">жми «найти ISO», чтобы просканировать папку</p>
       </div>
+
+      <h2 style="margin-top:20px;">Загрузить ISO</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Образы могут быть по 100+ ГБ — загрузка идёт кусками по ~10 МБ с
+        докачкой при обрыве связи (обновление страницы или потеря сети не
+        начинает всё заново). <b>Не закрывай эту вкладку браузера, пока идёт
+        загрузка</b> — она останавливается вместе с вкладкой (докачать можно
+        будет позже, с того же места).
+      </p>
+      <label for="iso-upload-dest">папка назначения</label>
+      <input id="iso-upload-dest" placeholder="/srv" value="/srv">
+      <label for="iso-upload-file">файл .iso</label>
+      <input id="iso-upload-file" type="file" accept=".iso">
+
+      <div id="iso-upload-progress-wrap" style="display:none; margin-top:10px;">
+        <div style="background:#060907; border:1px solid var(--fg-dim); height:22px; position:relative; overflow:hidden;">
+          <div id="iso-upload-progress-bar" style="background:var(--fg); height:100%; width:0%; transition:width 0.2s ease;"></div>
+          <span id="iso-upload-progress-text" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--fg); mix-blend-mode:difference;"></span>
+        </div>
+        <p class="modal-sub" id="iso-upload-status-line" style="margin:6px 0 0;"></p>
+      </div>
+
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="startIsoUpload()" id="iso-upload-start-btn">[ начать загрузку ]</button>
+        <button onclick="cancelIsoUpload()" id="iso-upload-cancel-btn" class="danger" style="display:none;">[ отменить ]</button>
+      </div>
     </div>
   </div>
 
@@ -2046,6 +2072,183 @@ async function mountIso(isoPathB64, inputId) {
   const data = await post('/api/mount_iso', {iso_path: isoPath, mountpoint});
   renderOutput('mount_iso ' + isoPath + ' ' + mountpoint, data);
   if (data.ok) refreshDisks();
+}
+
+// --- Загрузка ISO кусками, с докачкой при обрыве ---
+// 10 МБ на кусок — компромисс между числом запросов на 100+ ГБ файл
+// (слишком мелкие куски — тысячи HTTP-запросов, накладные расходы) и
+// разумным временем на один кусок даже на небыстрой сети.
+const ISO_CHUNK_SIZE = 10 * 1024 * 1024;
+
+let isoUploadState = { cancelled: false, sessionId: null, file: null, offset: 0, destDir: '' };
+
+function fmtBytesPlain(n) {
+  n = Number(n) || 0;
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function updateIsoUploadProgress(offset, total, statusText) {
+  const pct = total > 0 ? Math.min(100, (offset / total) * 100) : 0;
+  document.getElementById('iso-upload-progress-bar').style.width = pct.toFixed(1) + '%';
+  document.getElementById('iso-upload-progress-text').textContent = pct.toFixed(1) + '%';
+  document.getElementById('iso-upload-status-line').textContent =
+    statusText || `${fmtBytesPlain(offset)} из ${fmtBytesPlain(total)}`;
+}
+
+async function startIsoUpload() {
+  const fileInput = document.getElementById('iso-upload-file');
+  const destDir = document.getElementById('iso-upload-dest').value.trim();
+  const file = fileInput.files[0];
+
+  if (!file) { logLine('ERROR: выбери .iso файл', 'line-err'); return; }
+  if (!file.name.toLowerCase().endsWith('.iso')) { logLine('ERROR: файл должен иметь расширение .iso', 'line-err'); return; }
+  if (!destDir) { logLine('ERROR: укажи папку назначения', 'line-err'); return; }
+
+  document.getElementById('iso-upload-progress-wrap').style.display = 'block';
+  document.getElementById('iso-upload-start-btn').style.display = 'none';
+  document.getElementById('iso-upload-cancel-btn').style.display = 'inline-block';
+  isoUploadState.cancelled = false;
+  isoUploadState.file = file;
+  isoUploadState.destDir = destDir;
+
+  updateIsoUploadProgress(0, file.size, 'проверяю, нет ли уже начатой докачки...');
+
+  // Сначала ищем уже начатую, но не завершённую сессию для этого же файла —
+  // если браузер обновляли или связь обрывалась, докачиваем с места
+  // остановки, а не с нуля.
+  let sessionId = null;
+  let startOffset = 0;
+  try {
+    const findRes = await fetch('/api/iso_upload_find_resumable', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
+    });
+    const findData = await findRes.json();
+    if (findData.ok && findData.session_id) {
+      sessionId = findData.session_id;
+      startOffset = findData.bytes_received || 0;
+      logLine(`найдена незавершённая загрузка '${file.name}' — докачиваю с ${fmtBytesPlain(startOffset)}`, 'line-ok');
+    }
+  } catch (e) { /* если не нашли — просто начнём новую сессию ниже */ }
+
+  if (!sessionId) {
+    try {
+      const initRes = await fetch('/api/iso_upload_init', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
+      });
+      const initData = await initRes.json();
+      if (!initData.ok) {
+        logLine('ERROR: ' + (initData.output || 'не удалось начать загрузку'), 'line-err');
+        resetIsoUploadUI();
+        return;
+      }
+      sessionId = initData.session_id;
+    } catch (e) {
+      logLine('ERROR: не удалось связаться с сервером для начала загрузки', 'line-err');
+      resetIsoUploadUI();
+      return;
+    }
+  }
+
+  isoUploadState.sessionId = sessionId;
+  isoUploadState.offset = startOffset;
+
+  await isoUploadLoop();
+}
+
+async function isoUploadLoop() {
+  const { file, sessionId } = isoUploadState;
+  const total = file.size;
+
+  while (isoUploadState.offset < total) {
+    if (isoUploadState.cancelled) {
+      updateIsoUploadProgress(isoUploadState.offset, total, 'отменено');
+      return;
+    }
+
+    const start = isoUploadState.offset;
+    const end = Math.min(start + ISO_CHUNK_SIZE, total);
+    const chunk = file.slice(start, end);
+
+    let attempt = 0;
+    let success = false;
+    while (attempt < 5 && !success && !isoUploadState.cancelled) {
+      try {
+        const res = await fetch(`/api/iso_upload_chunk?session_id=${encodeURIComponent(sessionId)}&offset=${start}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/octet-stream'},
+          body: chunk
+        });
+        const data = await res.json();
+        if (data.ok) {
+          isoUploadState.offset = data.bytes_received;
+          success = true;
+        } else {
+          attempt++;
+          logLine(`кусок не принят (попытка ${attempt}/5): ${data.output || 'ошибка'}`, 'line-cmd');
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      } catch (e) {
+        attempt++;
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+      }
+    }
+
+    if (!success && !isoUploadState.cancelled) {
+      updateIsoUploadProgress(isoUploadState.offset, total,
+        `связь прервалась на ${fmtBytesPlain(isoUploadState.offset)} — нажми «начать загрузку» ещё раз, чтобы продолжить с этого места`);
+      logLine('ERROR: не удалось отправить кусок после нескольких попыток — загрузку можно продолжить позже с того же места', 'line-err');
+      document.getElementById('iso-upload-start-btn').style.display = 'inline-block';
+      document.getElementById('iso-upload-start-btn').textContent = '[ продолжить загрузку ]';
+      document.getElementById('iso-upload-cancel-btn').style.display = 'none';
+      return;
+    }
+
+    updateIsoUploadProgress(isoUploadState.offset, total);
+  }
+
+  if (isoUploadState.cancelled) return;
+
+  updateIsoUploadProgress(total, total, 'собираю файл на месте...');
+  try {
+    const finData = await post('/api/iso_upload_finish', {session_id: sessionId});
+    if (finData.ok) {
+      logLine('OK: ' + (finData.output || 'файл загружен'), 'line-ok');
+      updateIsoUploadProgress(total, total, 'готово!');
+      findIsoFiles();
+    } else {
+      logLine('ERROR: ' + (finData.output || 'не удалось завершить загрузку'), 'line-err');
+    }
+  } catch (e) {
+    logLine('ERROR: не удалось завершить загрузку', 'line-err');
+  }
+
+  setTimeout(resetIsoUploadUI, 2000);
+}
+
+async function cancelIsoUpload() {
+  isoUploadState.cancelled = true;
+  if (isoUploadState.sessionId) {
+    try {
+      await post('/api/iso_upload_cancel', {session_id: isoUploadState.sessionId});
+    } catch (e) { /* всё равно сбрасываем интерфейс ниже */ }
+  }
+  logLine('Загрузка ISO отменена', 'line-cmd');
+  resetIsoUploadUI();
+}
+
+function resetIsoUploadUI() {
+  document.getElementById('iso-upload-progress-wrap').style.display = 'none';
+  document.getElementById('iso-upload-start-btn').style.display = 'inline-block';
+  document.getElementById('iso-upload-start-btn').textContent = '[ начать загрузку ]';
+  document.getElementById('iso-upload-cancel-btn').style.display = 'none';
+  isoUploadState = { cancelled: false, sessionId: null, file: null, offset: 0, destDir: '' };
 }
 
 async function showSmartDetails(device) {
