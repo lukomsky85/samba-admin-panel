@@ -1661,18 +1661,35 @@ EOF
     # сервиса, из которого этот процесс изначально запустился, его не убьёт.
     log "перезапускаю sambapanel, чтобы новый код точно применился"
     systemctl restart sambapanel 2>&1
-    sleep 1
-    if systemctl is-active --quiet sambapanel; then
+
+    # Проверяем НЕСКОЛЬКО раз с паузой, а не один раз через секунду — на
+    # практике одной секунды может не хватить (venv, импорты Python,
+    # загрузка gunicorn — легко чуть дольше на нагруженном диске), и
+    # единственная ранняя проверка иногда ловила сервис в промежуточном
+    # состоянии, ошибочно считая рестарт неудавшимся: код на диске уже
+    # новый, реально всё поднималось секундой позже, а VERSION из-за этой
+    # гонки не записывался — снаружи выглядело как "обновление применилось,
+    # а версия осталась старой".
+    restarted_ok="no"
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        if systemctl is-active --quiet sambapanel; then
+            restarted_ok="yes"
+            break
+        fi
+    done
+
+    if [[ "$restarted_ok" == "yes" ]]; then
         # VERSION пишем ТОЛЬКО после подтверждённого успешного рестарта —
-        # если сервис не поднялся, честнее оставить старую версию в файле:
-        # "check_update" на это же обстоятельство ещё раз укажет админу,
-        # что обновление не завершилось нормально, а не тихо промолчит,
-        # что "всё актуально", пока сервис на самом деле не работает.
+        # если сервис так и не поднялся, честнее оставить старую версию в
+        # файле: "check_update" на это же обстоятельство ещё раз укажет
+        # админу, что обновление не завершилось нормально, а не тихо
+        # промолчит, что "всё актуально", пока сервис на самом деле не работает.
         mkdir -p /opt/sambapanel
         echo "$tag" > "$VERSION_FILE" 2>/dev/null || true
-        log "OK: панель обновлена до версии $tag, сервис перезапущен и работает"
+        log "OK: панель обновлена до версии $tag, сервис перезапущен и работает (готовность подтверждена за ${attempt} сек)"
     else
-        echo "ERROR: панель обновлена до версии $tag, но сервис sambapanel не поднялся после рестарта — VERSION НЕ обновлён специально, смотри: journalctl -u sambapanel -n 50" >&2
+        echo "ERROR: панель обновлена до версии $tag, но сервис sambapanel не поднялся после рестарта (ждали 10 сек) — VERSION НЕ обновлён специально, смотри: journalctl -u sambapanel -n 50" >&2
         exit 1
     fi
     ;;
@@ -1944,57 +1961,6 @@ EOF
     ;;
 
   iso_finalize_upload)
-    # Использование: iso_finalize_upload <part_path> <dest_dir> <dest_filename>
-    # Вызывается ТОЛЬКО когда панель не может писать в dest_dir напрямую
-    # (папка шары принадлежит конкретной Unix-группе/AD-группе, в которую
-    # www-panel не входит) — файл уже полностью докачан в общую staging-
-    # папку (/opt/sambapanel/uploads, из владения www-panel, настроена один
-    # раз в install.sh), тут только переносим его на настоящее место с
-    # правильными правами. Если staging и dest_dir на одной файловой системе
-    # — это мгновенный rename; если на разных — реальное копирование (тогда
-    # временно нужно места в обоих местах, Flask это уже проверил заранее).
-    part_path="${2:-}"; dest_dir="${3:-}"; dest_filename="${4:-}"
-
-    if [[ -z "$part_path" || ! -f "$part_path" ]]; then
-        echo "ERROR: временный файл '$part_path' не найден" >&2
-        exit 1
-    fi
-    if [[ "$part_path" != /opt/sambapanel/uploads/* ]]; then
-        echo "ERROR: временный файл должен находиться в служебной папке загрузок" >&2
-        exit 1
-    fi
-    validate_share_path "$dest_dir"
-    if [[ ! -d "$dest_dir" ]]; then
-        echo "ERROR: папка назначения '$dest_dir' не существует" >&2
-        exit 1
-    fi
-    if [[ -z "$dest_filename" || "$dest_filename" == *".."* || "$dest_filename" == */* ]]; then
-        echo "ERROR: недопустимое имя файла назначения" >&2
-        exit 1
-    fi
-    if [[ "${dest_filename,,}" != *.iso ]]; then
-        echo "ERROR: файл должен иметь расширение .iso" >&2
-        exit 1
-    fi
-
-    final_path="${dest_dir}/${dest_filename}"
-    if [[ -e "$final_path" ]]; then
-        echo "ERROR: файл '$final_path' уже существует — удали или переименуй существующий, если нужно заменить" >&2
-        exit 1
-    fi
-
-    log "перемещаю $part_path -> $final_path"
-    if ! mv "$part_path" "$final_path"; then
-        echo "ERROR: не удалось перенести файл в $final_path" >&2
-        exit 1
-    fi
-    chown root:root "$final_path"
-    chmod 644 "$final_path"
-
-    log "OK: ISO '$dest_filename' загружен и перемещён в $dest_dir ($(du -h "$final_path" | cut -f1))"
-    ;;
-
-  iso_finalize_upload)
     # Использование: iso_finalize_upload <temp_path> <dest_dir> <dest_filename>
     # Переносит уже полностью собранный из кусков файл (загрузка большого
     # ISO через браузер идёт кусками в staging-папку панели, где www-panel
@@ -2051,6 +2017,68 @@ EOF
     log "OK: файл '$dest_filename' перенесён в '$dest_dir'"
     ;;
 
+  delete_iso_file)
+    # Использование: delete_iso_file <iso_path>
+    # Удаляет загруженный/найденный ISO-файл. Отказывает, если файл сейчас
+    # смонтирован через loop-устройство (losetup -j покажет ассоциацию) —
+    # сначала нужно отмонтировать, иначе получится "удалить и продолжать
+    # использовать" файл, что на практике работает (inode живёт, пока
+    # открыт), но вводит в заблуждение и мешает потом освободить место
+    # на диске, на которое рассчитывал админ, нажимая "удалить".
+    iso_path="${2:-}"
+
+    if [[ -z "$iso_path" || ! -f "$iso_path" ]]; then
+        echo "ERROR: файл '$iso_path' не найден" >&2
+        exit 1
+    fi
+    if [[ "${iso_path,,}" != *.iso ]]; then
+        echo "ERROR: файл должен иметь расширение .iso" >&2
+        exit 1
+    fi
+    if [[ "$iso_path" == *".."* ]]; then
+        echo "ERROR: путь не может содержать '..'" >&2
+        exit 1
+    fi
+    if [[ ! "$iso_path" =~ $SHAREPATH_RE ]]; then
+        echo "ERROR: недопустимый путь" >&2
+        exit 1
+    fi
+
+    if command -v losetup &>/dev/null; then
+        mounted_loop="$(losetup -j "$iso_path" 2>/dev/null)"
+        if [[ -n "$mounted_loop" ]]; then
+            echo "ERROR: файл сейчас смонтирован (${mounted_loop%%:*}) — сначала отмонтируй во вкладке «Диски»" >&2
+            exit 1
+        fi
+    fi
+
+    size_before="$(du -h "$iso_path" 2>/dev/null | cut -f1)"
+    rm -f "$iso_path"
+    log "OK: файл '$iso_path' удалён (освобождено ${size_before:-?})"
+    ;;
+
+  create_iso_directory)
+    # Использование: create_iso_directory <path>
+    # Создаёт папку для хранения ISO-образов и сразу отдаёт её во владение
+    # www-panel — чтобы будущие загрузки в неё шли по быстрому "прямому"
+    # пути (без второй копии через общую staging-папку). Это оправдано
+    # именно для папок, специально создаваемых под ISO-хранилище панелью,
+    # в отличие от папок шар с определённым владельцем/группой.
+    path="${2:-}"
+    validate_share_path "$path"
+
+    if [[ -e "$path" && ! -d "$path" ]]; then
+        echo "ERROR: '$path' уже существует и не является папкой" >&2
+        exit 1
+    fi
+
+    mkdir -p "$path"
+    chown www-panel:www-panel "$path"
+    chmod 755 "$path"
+
+    log "OK: папка '$path' готова для ISO-образов"
+    ;;
+
   *)
     echo "ERROR: неизвестная команда '$cmd'" >&2
     echo "Доступные команды: create_user, remove_user, set_samba_password, toggle_share_access, list_users," >&2
@@ -2060,7 +2088,7 @@ EOF
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
-    echo "                   list_iso_files, mount_iso, iso_finalize_upload (группа шары также может быть 'GUEST' — без пароля)," >&2
+    echo "                   list_iso_files, mount_iso, iso_finalize_upload, delete_iso_file, create_iso_directory (группа шары также может быть 'GUEST' — без пароля)," >&2
     echo "                   get_notify_config, set_notify_config, test_notify," >&2
     echo "                   get_smtp_config, set_smtp_config, test_smtp_send," >&2
     echo "                   ad_status, ad_join, ad_leave, ad_test, ad_list_users, ad_list_groups," >&2

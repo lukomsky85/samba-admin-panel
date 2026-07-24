@@ -457,7 +457,10 @@
         будет позже, с того же места).
       </p>
       <label for="iso-upload-dest">папка назначения</label>
-      <input id="iso-upload-dest" placeholder="/srv" value="/srv">
+      <div class="row" style="margin-bottom:12px;">
+        <input id="iso-upload-dest" placeholder="/srv" value="/srv" style="margin-bottom:0; flex:1;">
+        <button type="button" onclick="createIsoDirectory()">[ создать папку ]</button>
+      </div>
       <label>файл .iso</label>
       <div class="row" style="margin-bottom:12px; align-items:center;">
         <label for="iso-upload-file" class="file-picker-btn">[ обзор... ]</label>
@@ -2075,6 +2078,7 @@ async function findIsoFiles() {
         <span class="row" style="gap:6px;">
           <input id="${inputId}" placeholder="/mnt/iso" style="width:160px; margin:0;">
           <button onclick="mountIso('${pathB64}', '${inputId}')">[ смонтировать ]</button>
+          <button class="danger" onclick="deleteIsoFile('${pathB64}')">[ удалить ]</button>
         </span>
       </div>
     `;
@@ -2090,6 +2094,22 @@ async function mountIso(isoPathB64, inputId) {
   const data = await post('/api/mount_iso', {iso_path: isoPath, mountpoint});
   renderOutput('mount_iso ' + isoPath + ' ' + mountpoint, data);
   if (data.ok) refreshDisks();
+}
+
+async function deleteIsoFile(isoPathB64) {
+  let isoPath;
+  try { isoPath = b64DecodeUtf8(isoPathB64); } catch (e) { logLine('ERROR: не удалось прочитать путь к ISO', 'line-err'); return; }
+  if (!confirm(`Удалить файл ${isoPath}? Это необратимо.`)) return;
+  const data = await post('/api/delete_iso_file', {iso_path: isoPath});
+  renderOutput('delete_iso_file ' + isoPath, data);
+  if (data.ok) findIsoFiles();
+}
+
+async function createIsoDirectory() {
+  const path = document.getElementById('iso-upload-dest').value.trim();
+  if (!path) { logLine('ERROR: укажи путь папки назначения', 'line-err'); return; }
+  const data = await post('/api/create_iso_directory', {path});
+  renderOutput('create_iso_directory ' + path, data);
 }
 
 // --- Загрузка ISO кусками, с докачкой при обрыве ---

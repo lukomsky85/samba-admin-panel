@@ -859,6 +859,32 @@ def api_mount_iso():
     return jsonify(ok=ok, output=output)
 
 
+@app.route("/api/delete_iso_file", methods=["POST"])
+@login_required
+def api_delete_iso_file():
+    data = request.get_json(force=True)
+    iso_path = (data.get("iso_path") or "").strip()
+
+    if not iso_path or ".." in iso_path or not SHAREPATH_RE.match(iso_path) or not iso_path.lower().endswith(".iso"):
+        return jsonify(ok=False, output="ERROR: недопустимый путь к ISO-файлу")
+
+    ok, output = run_helper(["delete_iso_file", iso_path])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/create_iso_directory", methods=["POST"])
+@login_required
+def api_create_iso_directory():
+    data = request.get_json(force=True)
+    path = (data.get("path") or "").strip()
+
+    if not path or ".." in path or not SHAREPATH_RE.match(path):
+        return jsonify(ok=False, output="ERROR: недопустимый путь")
+
+    ok, output = run_helper(["create_iso_directory", path])
+    return jsonify(ok=ok, output=output)
+
+
 # --- Загрузка больших ISO-образов через браузер (кусками, с докачкой) ---
 #
 # Обычная форма с одним запросом на весь файл не подходит: образы могут
