@@ -251,7 +251,12 @@ def logout():
 @login_required
 def index():
     ok, output = run_helper(["list_users"])
-    return render_template("index.html", users_output=output)
+    try:
+        with open("/opt/sambapanel/VERSION", "r", encoding="utf-8") as f:
+            panel_version = f.read().strip()
+    except Exception:
+        panel_version = "неизвестно"
+    return render_template("index.html", users_output=output, panel_version=panel_version)
 
 
 AD_GROUP_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)?$")
