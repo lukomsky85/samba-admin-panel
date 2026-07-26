@@ -22,7 +22,7 @@ fi
 
 total_deleted=0
 
-while IFS='|' read -r name path group writable hosts veto recycle retention; do
+while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit; do
     [[ -z "$name" ]] && continue
     recycle="${recycle:-no}"
     retention="${retention:-0}"

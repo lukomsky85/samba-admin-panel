@@ -45,7 +45,7 @@ fi
 ok_count=0
 fail_count=0
 
-while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup; do
+while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit; do
     [[ -z "$name" ]] && continue
     [[ "${backup:-no}" != "yes" ]] && continue
 
@@ -83,6 +83,45 @@ while IFS='|' read -r name path group writable hosts veto recycle retention av q
         rm -f "${old_archives[@]}"
     fi
 done < "$SHARES_DB"
+
+# --- Бэкап конфигурации САМОЙ ПАНЕЛИ, отдельно от данных шар ---
+# До этого бэкапилось только содержимое шар — если диск умрёт, список
+# пользователей, шар, настройки уведомлений/SMTP пришлось бы вбивать в
+# панель заново руками с нуля. Пароль входа в панель и секрет сессий
+# (systemd unit) сюда НЕ включены намеренно — на восстановлении их проще
+# и безопаснее задать заново (как при обычной установке), чем хранить в
+# архиве, который может оказаться на менее защищённом носителе, чем сам
+# сервер (внешний диск, сетевая папка).
+config_archive="${BACKUP_DEST}/panel-config-$(date '+%Y%m%d-%H%M%S').tar.gz"
+config_tmp="${config_archive}.tmp"
+
+config_files=()
+[[ -f /etc/sambapanel/shares.db ]] && config_files+=(/etc/sambapanel/shares.db)
+[[ -f /etc/sambapanel/backup.conf ]] && config_files+=(/etc/sambapanel/backup.conf)
+[[ -f /etc/sambapanel/notify.conf ]] && config_files+=(/etc/sambapanel/notify.conf)
+[[ -f /etc/msmtprc ]] && config_files+=(/etc/msmtprc)
+[[ -f /etc/samba/panel-shares.conf ]] && config_files+=(/etc/samba/panel-shares.conf)
+
+if [[ "${#config_files[@]}" -gt 0 ]]; then
+    log "бэкап конфигурации панели: ${config_files[*]}"
+    if tar czf "$config_tmp" "${config_files[@]}" 2>/var/log/sambapanel/backup-panel-config.err; then
+        mv "$config_tmp" "$config_archive"
+        chmod 600 "$config_archive"   # тут может быть SMTP-пароль/Telegram-токен — не всем читать
+        size="$(du -h "$config_archive" 2>/dev/null | cut -f1)"
+        log "конфигурация панели: OK, архив создан (${size:-?})"
+
+        mapfile -t old_config_archives < <(ls -t "${BACKUP_DEST}/panel-config-"*.tar.gz 2>/dev/null | tail -n +$((RETAIN_COUNT + 1)))
+        if [[ "${#old_config_archives[@]}" -gt 0 ]]; then
+            rm -f "${old_config_archives[@]}"
+        fi
+    else
+        rm -f "$config_tmp"
+        log "ERROR: не удалось создать архив конфигурации панели, см. /var/log/sambapanel/backup-panel-config.err"
+        fail_count=$((fail_count + 1))
+    fi
+else
+    log "конфигурация панели: ничего бэкапить не нашлось (свежая установка без шар?)"
+fi
 
 log "готово: успешно $ok_count, с ошибкой $fail_count"
 [[ "$fail_count" -gt 0 ]] && exit 1

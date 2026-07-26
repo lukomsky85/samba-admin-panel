@@ -33,6 +33,15 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 app = Flask(__name__)
 app.secret_key = os.environ.get("SAMBAPANEL_SECRET") or secrets.token_hex(32)
 
+# Панель всегда доступна только через nginx по HTTPS (Flask сам слушает
+# только 127.0.0.1, наружу не смотрит никогда) — поэтому безопасно и нужно
+# явно запретить cookie сессии по обычному HTTP. HttpOnly — cookie
+# недоступна из JS (защита от кражи через XSS), SameSite=Lax — cookie не
+# отправляется при переходе с чужого сайта (частичная защита от CSRF).
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 AUDIT_LOG_PATH = os.environ.get("SAMBAPANEL_AUDIT_LOG", "/var/log/sambapanel/audit.log")
 _AUDIT_LOCK = Lock()
 

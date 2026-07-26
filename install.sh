@@ -283,7 +283,11 @@ if [[ ! -x "$PANEL_DIR/venv/bin/python3" ]]; then
     sudo -u "$PANEL_USER" python3 -m venv "$PANEL_DIR/venv"
 fi
 sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet --upgrade pip
-sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet flask gunicorn
+# Версии закреплены намеренно — без этого разные установки/обновления в
+# разное время получали бы что угодно текущее на PyPI на тот момент,
+# включая потенциально несовместимые breaking changes между установками
+# одной и той же версии панели на разных серверах.
+sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet "flask==3.1.3" "gunicorn==26.0.0"
 
 # ---------------------------------------------------------------------------
 # 7. Пароль панели
