@@ -39,8 +39,15 @@ if ! command -v apt &>/dev/null; then
     fail "этот установщик рассчитан на Ubuntu/Debian (apt не найден)"
 fi
 
-for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh logrotate-sambapanel.conf logrotate-full-audit.conf samba-notify-failure.sh samba-notify@.service notify.conf.example; do
+for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh logrotate-sambapanel.conf logrotate-full-audit.conf; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "не найден файл '$f' — запускай install.sh из корня проекта"
+done
+
+# Необязательные файлы (уведомления о падении сервисов) — их отсутствие в
+# конкретной сборке не должно останавливать установку целиком, поэтому не
+# в списке выше; проверяются и обрабатываются мягко там, где используются.
+for f in samba-notify-failure.sh samba-notify@.service notify.conf.example; do
+    [[ -f "$SCRIPT_DIR/$f" ]] || warn "необязательный файл '$f' не найден в этой сборке — уведомления о падении сервисов будут пропущены, остальная установка продолжится"
 done
 
 echo
@@ -507,13 +514,29 @@ fi
 # когда будет время/желание, отредактировав notify.conf.
 
 step "устанавливаю уведомления о падении сервисов (Telegram/почта — настраиваются отдельно)"
-install -m 750 -o root -g root "$SCRIPT_DIR/samba-notify-failure.sh" /usr/local/sbin/samba-notify-failure.sh
-install -m 644 -o root -g root "$SCRIPT_DIR/samba-notify@.service" /etc/systemd/system/samba-notify@.service
+# Необязательная фича — если файла вдруг нет в конкретном архиве релиза
+# (например, забыли добавить в git при вырезке версии), не роняем из-за
+# этого ВЕСЬ процесс обновления на середине. Само наличие уведомлений
+# опционально по дизайну (без notify.conf они и так просто молчат) — таким
+# же опциональным должно быть и их отсутствие в конкретной сборке.
+if [[ -f "$SCRIPT_DIR/samba-notify-failure.sh" ]]; then
+    install -m 750 -o root -g root "$SCRIPT_DIR/samba-notify-failure.sh" /usr/local/sbin/samba-notify-failure.sh
+else
+    warn "samba-notify-failure.sh не найден в этой сборке — пропускаю установку уведомлений (остальная установка продолжается)"
+fi
+
+if [[ -f "$SCRIPT_DIR/samba-notify@.service" ]]; then
+    install -m 644 -o root -g root "$SCRIPT_DIR/samba-notify@.service" /etc/systemd/system/samba-notify@.service
+else
+    warn "samba-notify@.service не найден в этой сборке — пропускаю"
+fi
 
 mkdir -p /etc/sambapanel
 if [[ ! -f /etc/sambapanel/notify.conf ]]; then
-    install -m 640 -o root -g root "$SCRIPT_DIR/notify.conf.example" /etc/sambapanel/notify.conf
-    step "создан шаблон /etc/sambapanel/notify.conf — заполни его, чтобы уведомления реально отправлялись (см. README)"
+    if [[ -f "$SCRIPT_DIR/notify.conf.example" ]]; then
+        install -m 640 -o root -g root "$SCRIPT_DIR/notify.conf.example" /etc/sambapanel/notify.conf
+        step "создан шаблон /etc/sambapanel/notify.conf — заполни его, чтобы уведомления реально отправлялись (см. README)"
+    fi
 else
     warn "/etc/sambapanel/notify.conf уже существует, не трогаю"
 fi

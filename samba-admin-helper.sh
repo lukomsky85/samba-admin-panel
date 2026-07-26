@@ -1631,6 +1631,53 @@ EOF
         exit 1
     fi
 
+    # Проверка целостности распакованного архива. `curl`/`tar` возвращают
+    # код успеха, даже когда что-то пошло не так на уровне сети (например,
+    # соединение обрывается так, что ни curl, ни tar формально не считают
+    # это ошибкой, но часть файлов из архива не долетает или не
+    # распаковывается) — это реально случилось на практике: install.sh
+    # падал на несуществующем файле из архива, хотя буквально тот же самый
+    # архив, скачанный секундами позже отдельно, оказывался целым. Раз
+    # доверять кодам возврата целиком нельзя — сверяем явно, что базовый
+    # набор файлов проекта реально на месте, и если нет — пробуем скачать
+    # ещё раз один раз, прежде чем сдаваться с понятной причиной.
+    check_extracted_files() {
+        local dir="$1"
+        local f missing=()
+        for f in app.py samba-admin-helper.sh samba-notify-failure.sh samba-backup.sh samba-restore.sh samba-recycle-cleanup.sh templates/index.html; do
+            [[ -f "$dir/$f" ]] || missing+=("$f")
+        done
+        printf '%s\n' "${missing[@]}"
+    }
+
+    missing_files="$(check_extracted_files "$extracted_dir")"
+    if [[ -n "$missing_files" ]]; then
+        log "предупреждение: в распакованном архиве не хватает файлов ($missing_files) — пробую скачать релиз ещё раз (возможно, разовый сетевой сбой при первой попытке)"
+        rm -rf "$tmp_dir"
+        tmp_dir="$(mktemp -d)"
+
+        if ! curl -sfL -m 60 -o "$tmp_dir/release.tar.gz" "$archive_url"; then
+            echo "ERROR: повторное скачивание $archive_url не удалось" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+        if ! tar xzf "$tmp_dir/release.tar.gz" -C "$tmp_dir" 2>/dev/null; then
+            echo "ERROR: повторная распаковка не удалась" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+        extracted_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+
+        missing_files="$(check_extracted_files "$extracted_dir")"
+        if [[ -n "$missing_files" ]]; then
+            echo "ERROR: и после повторного скачивания в архиве релиза '$tag' не хватает файлов: $(echo "$missing_files" | tr '\n' ' ')" >&2
+            echo "ERROR: похоже, дело не в разовом сетевом сбое — проверь сам релиз на GitHub (releases/tag/$tag) и содержимое репозитория на момент его создания" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+        log "OK: при повторной попытке архив оказался полным, продолжаю"
+    fi
+
     # сохраняем текущий пароль панели, чтобы install.sh не сгенерировал новый
     current_password=""
     if [[ -f /etc/systemd/system/sambapanel.service ]]; then
