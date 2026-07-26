@@ -128,6 +128,32 @@
   }
   input:focus, select:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg) inset; }
 
+  /* Прячем нативные системные стрелки числовых полей — они серые/белые и
+     никак не поддаются кастомной раскраске напрямую (браузеры сильно
+     ограничивают, что можно менять в этих псевдоэлементах), поэтому рисуем
+     свои поверх, а не пытаемся перекрасить оригинал. */
+  input[type="number"] { -moz-appearance: textfield; padding-right: 26px; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  .number-input-wrap { position: relative; margin-bottom: 12px; }
+  .number-input-wrap input[type="number"] { margin-bottom: 0; }
+  .number-spinner {
+    position: absolute; right: 1px; top: 1px; bottom: 1px; width: 22px;
+    display: flex; flex-direction: column;
+  }
+  .number-spinner button {
+    flex: 1; padding: 0; margin: 0; min-width: 0;
+    border: none; border-left: 1px solid var(--fg-dim);
+    background: transparent; color: var(--fg-dim);
+    font-size: 8px; line-height: 1; letter-spacing: 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: background-color 0.12s ease, color 0.12s ease;
+  }
+  .number-spinner button:active { transform: none; }
+  .number-spinner .spin-up { border-bottom: 1px solid var(--fg-dim); border-radius: 0; }
+  .number-spinner button:hover { background: var(--fg); color: #05100a; }
+
   input[type="checkbox"] {
     appearance: none; -webkit-appearance: none; -moz-appearance: none;
     width: 16px; height: 16px; min-width: 16px;
@@ -376,12 +402,24 @@
         <label style="margin:0;"><input type="checkbox" id="share-recycle" style="margin:0;"> включить корзину для удалённых файлов</label>
       </div>
       <label for="share-retention">хранить в корзине дней (0 = навсегда, чистить только руками)</label>
-      <input id="share-retention" type="number" min="0" max="9999" value="0" placeholder="0">
+      <div class="number-input-wrap">
+        <input id="share-retention" type="number" min="0" max="9999" value="0" placeholder="0">
+        <div class="number-spinner">
+          <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('share-retention', 1)">▲</button>
+          <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('share-retention', -1)">▼</button>
+        </div>
+      </div>
       <div class="row" style="margin-bottom:12px;">
         <label style="margin:0;"><input type="checkbox" id="share-antivirus" style="margin:0;"> сканировать файлы антивирусом (ClamAV)</label>
       </div>
       <label for="share-quota">квота — предупреждение при превышении (ГБ, 0 = без лимита)</label>
-      <input id="share-quota" type="number" min="0" step="0.1" value="0" placeholder="0">
+      <div class="number-input-wrap">
+        <input id="share-quota" type="number" min="0" step="0.1" value="0" placeholder="0">
+        <div class="number-spinner">
+          <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('share-quota', 1)">▲</button>
+          <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('share-quota', -1)">▼</button>
+        </div>
+      </div>
       <div class="row" style="margin-bottom:12px;">
         <label style="margin:0;"><input type="checkbox" id="share-backup" style="margin:0;"> включить бэкап по расписанию</label>
       </div>
@@ -723,7 +761,13 @@
       </div>
       <div id="recycle-modal-retention-row">
         <label for="recycle-modal-retention">хранить дней (0 = навсегда, чистить только руками)</label>
-        <input id="recycle-modal-retention" type="number" min="0" max="9999" value="0">
+        <div class="number-input-wrap">
+          <input id="recycle-modal-retention" type="number" min="0" max="9999" value="0">
+          <div class="number-spinner">
+            <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('recycle-modal-retention', 1)">▲</button>
+            <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('recycle-modal-retention', -1)">▼</button>
+          </div>
+        </div>
       </div>
       <div class="modal-actions">
         <button onclick="closeRecycleModal()">[ отмена ]</button>
@@ -741,7 +785,13 @@
       </div>
       <div id="quota-modal-value-row">
         <label for="quota-modal-value">лимит, ГБ</label>
-        <input id="quota-modal-value" type="number" min="0" step="0.1" value="1">
+        <div class="number-input-wrap">
+          <input id="quota-modal-value" type="number" min="0" step="0.1" value="1">
+          <div class="number-spinner">
+            <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('quota-modal-value', 1)">▲</button>
+            <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('quota-modal-value', -1)">▼</button>
+          </div>
+        </div>
       </div>
       <div class="modal-actions">
         <button onclick="closeQuotaModal()">[ отмена ]</button>
@@ -851,6 +901,26 @@ function logLine(text, cls) {
   span.textContent = text;
   consoleEl.appendChild(span);
   consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function stepNumberInput(id, direction) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const step = parseFloat(input.step) || 1;
+  const min = input.min !== '' && input.min !== undefined ? parseFloat(input.min) : -Infinity;
+  const max = input.max !== '' && input.max !== undefined ? parseFloat(input.max) : Infinity;
+  let value = parseFloat(input.value);
+  if (isNaN(value)) value = 0;
+  value += direction * step;
+  value = Math.min(max, Math.max(min, value));
+  // округляем до того же числа знаков после запятой, что и у step (0.1 ->
+  // 1 знак) — иначе из-за особенностей чисел с плавающей точкой можно
+  // получить что-то вроде 0.30000000000000004 в поле.
+  const stepStr = step.toString();
+  const decimals = stepStr.includes('.') ? stepStr.split('.')[1].length : 0;
+  input.value = value.toFixed(decimals);
+  input.dispatchEvent(new Event('input', {bubbles: true}));
+  input.dispatchEvent(new Event('change', {bubbles: true}));
 }
 
 async function post(url, body) {
