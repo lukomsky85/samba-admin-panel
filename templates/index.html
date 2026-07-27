@@ -1713,6 +1713,8 @@ async function checkForUpdate() {
   }
 }
 
+let updateLogPollTimer = null;
+
 async function applyUpdate(tag) {
   if (!confirm(
     'Обновить панель до версии ' + tag + '?\n\n' +
@@ -1724,9 +1726,75 @@ async function applyUpdate(tag) {
   const data = await post('/api/apply_update', {tag});
   renderOutput('apply_update ' + tag, data);
   if (data.ok) {
-    logLine('обновление запущено в фоне — следи за прогрессом через «показать журнал обновления»', 'line-cmd');
-    setTimeout(refreshUpdateLog, 3000);
+    logLine('обновление запущено в фоне — журнал ниже обновляется автоматически', 'line-cmd');
+    document.getElementById('update-log-output').style.display = 'block';
+    startUpdateLogPolling(tag);
   }
+}
+
+function startUpdateLogPolling(tag) {
+  if (updateLogPollTimer) clearInterval(updateLogPollTimer);
+  pollUpdateLog(tag);
+  updateLogPollTimer = setInterval(() => pollUpdateLog(tag), 2000);
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function pollUpdateLog(tag) {
+  const box = document.getElementById('update-log-output');
+  let data;
+  try {
+    const res = await fetch('/api/update_log');
+    data = await res.json();
+  } catch (e) {
+    return; // сервер мог быть посреди рестарта — просто попробуем на следующем тике
+  }
+  if (!data || !data.ok) return;
+
+  const fullLog = data.output || '';
+  // Показываем только СЕГМЕНТ лога, относящийся к ЭТОЙ конкретной попытке
+  // обновления — иначе строки от прошлых (возможно, неудачных) попыток
+  // сбивали бы определение "успех/ошибка" ложными совпадениями.
+  const marker = 'Запуск обновления до ' + tag;
+  const idx = fullLog.lastIndexOf(marker);
+  const segment = idx >= 0 ? fullLog.slice(idx) : fullLog;
+  smoothBoxUpdate(box, escapeHtml(segment));
+
+  const successRe = new RegExp('OK: панель обновлена до версии ' + escapeRegex(tag));
+  if (successRe.test(segment)) {
+    clearInterval(updateLogPollTimer);
+    updateLogPollTimer = null;
+    logLine('обновление до ' + tag + ' завершено успешно — перезагружаю страницу...', 'line-ok');
+    waitForServerAndReload();
+    return;
+  }
+  if (/ERROR:/.test(segment)) {
+    clearInterval(updateLogPollTimer);
+    updateLogPollTimer = null;
+    logLine('обновление завершилось с ошибкой — подробности в журнале ниже', 'line-err');
+  }
+}
+
+async function waitForServerAndReload() {
+  // Сервис вот-вот перезапустится (или уже перезапускается) — обычная
+  // перезагрузка страницы в лоб рискует поймать сервер посреди рестарта и
+  // показать ошибку соединения. Вместо этого сначала дожидаемся, пока
+  // сервер снова начнёт отвечать, и только тогда делаем настоящую F5.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const res = await fetch('/login', {cache: 'no-store'});
+      if (res.status === 200) {
+        location.reload();
+        return;
+      }
+    } catch (e) {
+      // сервер ещё не поднялся — пробуем на следующей секунде
+    }
+  }
+  location.reload(); // не дождались за 30 секунд — перезагружаем всё равно
 }
 
 async function refreshUpdateLog() {
