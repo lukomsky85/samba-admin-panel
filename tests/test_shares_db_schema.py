@@ -26,6 +26,7 @@ SCRIPTS_TO_CHECK = [
     "samba-backup.sh",
     "samba-recycle-cleanup.sh",
     "samba-admin-helper.sh",
+    "samba-panel-monitor.sh",
 ]
 
 

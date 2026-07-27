@@ -39,7 +39,7 @@ if ! command -v apt &>/dev/null; then
     fail "этот установщик рассчитан на Ubuntu/Debian (apt не найден)"
 fi
 
-for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh logrotate-sambapanel.conf logrotate-full-audit.conf; do
+for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh logrotate-sambapanel.conf logrotate-full-audit.conf samba-panel-monitor.sh samba-panel-monitor.service samba-panel-monitor.timer; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "не найден файл '$f' — запускай install.sh из корня проекта"
 done
 
@@ -191,6 +191,14 @@ install -m 644 -o root -g root "$SCRIPT_DIR/samba-recycle-cleanup.service" /etc/
 install -m 644 -o root -g root "$SCRIPT_DIR/samba-recycle-cleanup.timer" /etc/systemd/system/samba-recycle-cleanup.timer
 systemctl daemon-reload
 systemctl enable --now samba-recycle-cleanup.timer
+
+step "устанавливаю мониторинг событий панели (антивирус/квота/SMART — раз в 15 минут)"
+install -m 750 -o root -g root "$SCRIPT_DIR/samba-panel-monitor.sh" /usr/local/sbin/samba-panel-monitor.sh
+install -m 644 -o root -g root "$SCRIPT_DIR/samba-panel-monitor.service" /etc/systemd/system/samba-panel-monitor.service
+install -m 644 -o root -g root "$SCRIPT_DIR/samba-panel-monitor.timer" /etc/systemd/system/samba-panel-monitor.timer
+mkdir -p /var/lib/sambapanel/monitor-state
+systemctl daemon-reload
+systemctl enable --now samba-panel-monitor.timer
 
 # ---------------------------------------------------------------------------
 # 4.1 Бэкап шар (tar.gz с ротацией по расписанию)
