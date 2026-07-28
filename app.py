@@ -570,6 +570,41 @@ def api_disk_usage():
     return jsonify(ok=ok, output=output)
 
 
+@app.route("/api/get_backup_config")
+@login_required
+def api_get_backup_config():
+    ok, output = run_helper(["get_backup_config"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_backup_config", methods=["POST"])
+@login_required
+def api_set_backup_config():
+    data = request.get_json(force=True)
+    dest = (data.get("dest") or "").strip()
+    retain = data.get("retain_count", 7)
+
+    if not dest:
+        return jsonify(ok=False, output="ERROR: укажи путь для бэкапов")
+    try:
+        retain_int = int(retain)
+        if retain_int < 1:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify(ok=False, output="ERROR: количество хранимых архивов должно быть целым числом не меньше 1")
+
+    dest_b64 = base64.b64encode(dest.encode()).decode()
+    ok, output = run_helper(["set_backup_config", dest_b64, str(retain_int)])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/run_backup_now", methods=["POST"])
+@login_required
+def api_run_backup_now():
+    ok, output = run_helper(["run_backup_now"])
+    return jsonify(ok=ok, output=output)
+
+
 @app.route("/api/list_block_devices")
 @login_required
 def api_list_block_devices():

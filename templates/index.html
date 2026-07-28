@@ -548,6 +548,32 @@
         <button onclick="cancelIsoUpload()" id="iso-upload-cancel-btn" class="danger" style="display:none;">[ отменить ]</button>
       </div>
     </div>
+
+    <div class="panel userlist">
+      <h2>Бэкапы шар</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Ежедневно (по расписанию, ~02:30) архивируются шары с включённым
+        флагом «бэкап по расписанию» (см. вкладку «Шары и пользователи»).
+        <code>.recycle</code> и <code>.quarantine</code> в архив не входят.
+      </p>
+      <div id="backup-config-status">
+        <p class="badge-off">жми «обновить», чтобы увидеть текущие настройки</p>
+      </div>
+
+      <label for="backup-dest-input" style="margin-top:12px;">папка назначения</label>
+      <input id="backup-dest-input" placeholder="/srv/backups">
+      <label for="backup-retain-input">хранить последних архивов на шару</label>
+      <input id="backup-retain-input" type="number" min="1" value="7">
+
+      <div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap;">
+        <button onclick="refreshBackupConfig()">[ обновить ]</button>
+        <button onclick="saveBackupConfig()">[ сохранить настройки ]</button>
+        <button onclick="runBackupNow()">[ запустить бэкап сейчас ]</button>
+      </div>
+
+      <div id="backup-shares-list" style="margin-top:12px;"></div>
+      <div class="output-box" id="backup-run-output" style="display:none; margin-top:10px;"></div>
+    </div>
   </div>
 
   <div class="grid tab-content" id="tab-monitor">
@@ -2337,6 +2363,88 @@ async function refreshDisks() {
   });
 }
 
+async function refreshBackupConfig() {
+  const statusBox = document.getElementById('backup-config-status');
+  const sharesBox = document.getElementById('backup-shares-list');
+  statusBox.innerHTML = '<p class="badge-off">загрузка...</p>';
+  sharesBox.innerHTML = '';
+
+  const res = await fetch('/api/get_backup_config');
+  const data = await res.json();
+  if (!data.ok) {
+    statusBox.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const confLine = lines.find(l => l.startsWith('BACKUPCONF|'));
+  const shareLines = lines.filter(l => l.startsWith('BACKUPSHARE|'));
+
+  if (confLine) {
+    const parts = confLine.split('|');
+    let dest = '';
+    try { dest = parts[1] ? b64DecodeUtf8(parts[1]) : ''; } catch (e) { dest = ''; }
+    const retain = parts[2] || '7';
+    const exists = parts[3] === 'yes';
+    const freeBytes = parts[4] || '0';
+
+    document.getElementById('backup-dest-input').value = dest;
+    document.getElementById('backup-retain-input').value = retain;
+
+    if (!dest) {
+      statusBox.innerHTML = '<p class="badge-off">бэкап ещё не настроен — укажи папку назначения ниже</p>';
+    } else if (!exists) {
+      statusBox.innerHTML = `<p class="line-fail">⚠ папка «${escapeHtml(dest)}» сейчас НЕ существует — бэкапы не будут создаваться, пока это не исправить</p>`;
+    } else {
+      statusBox.innerHTML = `<p class="badge-on">✔ ${escapeHtml(dest)} · свободно ${fmtBytesG(freeBytes)} · хранится последних архивов на шару: ${escapeHtml(retain)}</p>`;
+    }
+  }
+
+  if (shareLines.length === 0) {
+    sharesBox.innerHTML = '<p class="badge-off">ни у одной шары не включён бэкап по расписанию (см. вкладку «Шары и пользователи»)</p>';
+    return;
+  }
+
+  let html = '<p class="modal-sub" style="margin:0 0 6px;">Шары с включённым бэкапом:</p>';
+  shareLines.forEach(line => {
+    const p = line.split('|');
+    let name, lastFile;
+    try { name = b64DecodeUtf8(p[1]); } catch (e) { return; }
+    try { lastFile = p[2] ? b64DecodeUtf8(p[2]) : ''; } catch (e) { lastFile = ''; }
+    const size = p[3] || '0';
+    const dateTs = parseInt(p[4] || '0', 10);
+
+    let info;
+    if (lastFile) {
+      const date = new Date(dateTs * 1000);
+      info = `последний архив: ${escapeHtml(lastFile)} (${fmtBytesG(size)}, ${date.toLocaleString('ru-RU')})`;
+    } else {
+      info = 'архивов ещё нет — либо бэкап только что включили, либо ждёт ближайшего запуска по расписанию';
+    }
+    html += `<div class="disk-row row-in"><span class="badge-on">${escapeHtml(name)}</span> <span style="color:var(--fg-dim); font-size:12px;">— ${info}</span></div>`;
+  });
+  sharesBox.innerHTML = html;
+}
+
+async function saveBackupConfig() {
+  const dest = document.getElementById('backup-dest-input').value.trim();
+  const retain_count = parseInt(document.getElementById('backup-retain-input').value, 10) || 7;
+  if (!dest) { logLine('ERROR: укажи папку назначения бэкапов', 'line-err'); return; }
+  const data = await post('/api/set_backup_config', {dest, retain_count});
+  renderOutput('set_backup_config ' + dest, data);
+  if (data.ok) refreshBackupConfig();
+}
+
+async function runBackupNow() {
+  if (!confirm('Запустить бэкап всех шар с включённым флагом прямо сейчас (не дожидаясь ночного расписания)?')) return;
+  const box = document.getElementById('backup-run-output');
+  box.style.display = 'block';
+  box.textContent = 'запускаю...';
+  const data = await post('/api/run_backup_now', {});
+  box.textContent = data.output || '(пусто)';
+  if (data.ok) refreshBackupConfig();
+}
+
 async function findIsoFiles() {
   const path = document.getElementById('iso-search-path').value.trim() || '/srv';
   const body = document.getElementById('iso-list-body');
@@ -2786,6 +2894,10 @@ function showTab(tabName) {
 
   if (tabName === 'ad') {
     refreshAdStatus();
+  }
+
+  if (tabName === 'disks') {
+    refreshBackupConfig();
   }
 
   if (tabName === 'updates') {

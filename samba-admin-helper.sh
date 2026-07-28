@@ -1148,6 +1148,112 @@ case "$cmd" in
     fi
     ;;
 
+  get_backup_config)
+    # Читает текущую конфигурацию бэкапов (только чтение) — путь назначения,
+    # сколько архивов хранить, существует ли папка сейчас и сколько там
+    # свободного места. Отдельно — по каждой шаре с backup=yes: дата и
+    # размер последнего реально созданного архива, если он есть.
+    dest=""
+    retain="7"
+    if [[ -f "$BACKUP_CONF" ]]; then
+        # shellcheck source=/dev/null
+        source "$BACKUP_CONF" 2>/dev/null || true
+        dest="${BACKUP_DEST:-}"
+        retain="${RETAIN_COUNT:-7}"
+    fi
+
+    dest_b64="$(printf '%s' "$dest" | base64 -w0)"
+    dest_exists="no"
+    dest_free="0"
+    if [[ -n "$dest" && -d "$dest" ]]; then
+        dest_exists="yes"
+        dest_free="$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ')"
+        dest_free="${dest_free:-0}"
+    fi
+    echo "BACKUPCONF|${dest_b64}|${retain}|${dest_exists}|${dest_free}"
+
+    ensure_db
+    if [[ -s "$SHARES_DB" ]]; then
+        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit; do
+            [[ -z "$s_name" ]] && continue
+            [[ "${s_backup:-no}" != "yes" ]] && continue
+
+            name_b64="$(printf '%s' "$s_name" | base64 -w0)"
+            last_file=""
+            last_size="0"
+            last_date=""
+            if [[ -n "$dest" && -d "$dest" ]]; then
+                last_file="$(ls -t "${dest}/${s_name}-"*.tar.gz 2>/dev/null | head -1 || true)"
+                if [[ -n "$last_file" ]]; then
+                    last_size="$(stat -c %s "$last_file" 2>/dev/null || echo 0)"
+                    last_date="$(stat -c %Y "$last_file" 2>/dev/null || echo 0)"
+                fi
+            fi
+            last_file_b64="$(printf '%s' "$(basename "${last_file:-}" 2>/dev/null || true)" | base64 -w0)"
+            echo "BACKUPSHARE|${name_b64}|${last_file_b64}|${last_size}|${last_date}"
+        done < "$SHARES_DB"
+    fi
+    ;;
+
+  set_backup_config)
+    # Использование: set_backup_config <dest_b64> <retain_count>
+    # /tmp и его подпапки отклоняются намеренно — это временное хранилище,
+    # которое штатно чистится системой (systemd-tmpfiles-clean, очистка при
+    # перезагрузке), и однажды реально привело к пропаже "настроенного"
+    # места для бэкапов без единого действия админа, просто со временем.
+    dest_b64="${2:-}"; retain_raw="${3:-7}"
+    dest="$(printf '%s' "$dest_b64" | base64 -d 2>/dev/null || true)"
+
+    if [[ -z "$dest" ]]; then
+        echo "ERROR: не указан путь для бэкапов" >&2
+        exit 1
+    fi
+    if [[ "$dest" != /* ]]; then
+        echo "ERROR: путь должен быть абсолютным (начинаться с /)" >&2
+        exit 1
+    fi
+    if [[ "$dest" == "/tmp" || "$dest" == "/tmp/"* ]]; then
+        echo "ERROR: '/tmp' и его подпапки — временное хранилище, штатно чистится системой (перезагрузка, systemd-tmpfiles-clean). Бэкапы там рано или поздно бесследно исчезнут. Выбери постоянное место (например, отдельный смонтированный диск или /srv/backups)." >&2
+        exit 1
+    fi
+    if [[ ! "$retain_raw" =~ ^[0-9]+$ || "$retain_raw" -lt 1 ]]; then
+        echo "ERROR: количество хранимых архивов должно быть целым числом не меньше 1" >&2
+        exit 1
+    fi
+
+    if [[ ! -d "$dest" ]]; then
+        log "папка '$dest' не существует, создаю"
+        mkdir -p "$dest" || { echo "ERROR: не удалось создать папку '$dest' — проверь права/путь" >&2; exit 1; }
+    fi
+    if [[ ! -w "$dest" ]]; then
+        echo "ERROR: папка '$dest' существует, но недоступна для записи" >&2
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$BACKUP_CONF")"
+    printf 'BACKUP_DEST="%s"\nRETAIN_COUNT=%s\n' "$dest" "$retain_raw" > "$BACKUP_CONF"
+    chmod 644 "$BACKUP_CONF"
+
+    log "OK: бэкапы теперь идут в '$dest', хранится последних архивов на шару: $retain_raw"
+    ;;
+
+  run_backup_now)
+    # Запускает бэкап немедленно, не дожидаясь ежедневного расписания —
+    # тот же самый systemd-сервис, что срабатывает по таймеру, просто по
+    # явному запросу. Синхронно (не в фоне) — бэкап шар обычно не настолько
+    # долгий, чтобы это было проблемой, и так админ сразу видит результат.
+    if [[ ! -f "$BACKUP_CONF" ]]; then
+        echo "ERROR: бэкап не настроен — сначала задай папку назначения" >&2
+        exit 1
+    fi
+    if ! systemctl start samba-backup.service; then
+        echo "ERROR: не удалось запустить samba-backup.service — смотри journalctl -u samba-backup" >&2
+        exit 1
+    fi
+    log "OK: бэкап запущен и завершён, смотри журнал ниже"
+    journalctl -u samba-backup.service -n 30 --no-pager 2>/dev/null || true
+    ;;
+
   list_block_devices)
     # Список дисков и разделов: путь, размер, ФС, куда смонтирован, модель.
     # Только чтение — ничего не меняет. PATH (а не NAME) используется
@@ -2133,6 +2239,7 @@ EOF
     echo "                   set_share_recycle, empty_recycle_bin, list_recycle_bin, restore_recycle_file," >&2
     echo "                   set_share_antivirus, empty_quarantine, list_shares, set_share_group," >&2
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
+    echo "                   get_backup_config, set_backup_config, run_backup_now," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
     echo "                   list_iso_files, mount_iso, iso_finalize_upload, delete_iso_file, create_iso_directory (группа шары также может быть 'GUEST' — без пароля)," >&2
