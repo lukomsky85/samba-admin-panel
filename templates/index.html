@@ -61,7 +61,7 @@
   #matrix-bg {
     position: fixed; inset: 0; z-index: 0;
     pointer-events: none;
-    opacity: 0.4;
+    opacity: 0.12;
   }
   * { scrollbar-width: thin; scrollbar-color: var(--fg-dim) #060907; }
   ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -961,8 +961,10 @@
 const CSRF_TOKEN = "{{ csrf_token() }}";
 
 // --- Фоновая анимация "цифровой дождь" в цвете текущей темы ---
-// ~20 кадров/сек — панель обычно открыта часами с активным
-// автообновлением данных, полный 60fps для фоновой красоты того не стоит.
+// ~10 кадров/сек и пауза на скрытой вкладке (тот же паттерн, что и у
+// авто-обновления на вкладке "Мониторинг") — панель обычно открыта часами,
+// не было смысла грузить CPU/GPU ради фоновой красоты, которую никто не
+// смотрит, пока вкладка свёрнута или на заднем плане.
 // Намеренно НЕ проверяем prefers-reduced-motion — это личная админ-панель,
 // а не публичный продукт, и раньше эта проверка тихо отключала эффект тем,
 // кто явно его хотел (диагностировано через реальную проверку в консоли
@@ -972,10 +974,11 @@ const CSRF_TOKEN = "{{ csrf_token() }}";
   if (!canvas) return;
 
   const ctx = canvas.getContext('2d');
-  const FONT_SIZE = 16;
+  const FONT_SIZE = 20;
   const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let columns = 0;
   let drops = [];
+  let matrixTimer = null;
 
   function hexToRgba(hex, alpha) {
     hex = hex.trim().replace('#', '');
@@ -1022,9 +1025,24 @@ const CSRF_TOKEN = "{{ csrf_token() }}";
     }
   }
 
+  function startMatrixTimer() {
+    if (matrixTimer) return;
+    matrixTimer = setInterval(draw, 100);
+  }
+
+  function stopMatrixTimer() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer);
+    matrixTimer = null;
+  }
+
   resize();
   window.addEventListener('resize', resize);
-  setInterval(draw, 50);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopMatrixTimer();
+    else startMatrixTimer();
+  });
+  startMatrixTimer();
 })();
 
 const consoleEl = document.getElementById('console');

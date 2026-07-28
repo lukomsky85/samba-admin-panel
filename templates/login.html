@@ -30,7 +30,7 @@
   #matrix-bg {
     position: fixed; inset: 0; z-index: 0;
     pointer-events: none;
-    opacity: 0.4;
+    opacity: 0.12;
   }
   body::before {
     content: "";
@@ -91,11 +91,12 @@
   if (!canvas) return;
 
   const ctx = canvas.getContext('2d');
-  const FONT_SIZE = 16;
+  const FONT_SIZE = 20;
   const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const FG_COLOR = '#39ff6a';
   const BG_FADE = 'rgba(11, 15, 13, 0.08)';
   let drops = [];
+  let matrixTimer = null;
 
   function resize() {
     canvas.width = window.innerWidth;
@@ -121,9 +122,24 @@
     }
   }
 
+  function startMatrixTimer() {
+    if (matrixTimer) return;
+    matrixTimer = setInterval(draw, 100);
+  }
+
+  function stopMatrixTimer() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer);
+    matrixTimer = null;
+  }
+
   resize();
   window.addEventListener('resize', resize);
-  setInterval(draw, 50);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopMatrixTimer();
+    else startMatrixTimer();
+  });
+  startMatrixTimer();
 })();
 </script>
 </body>
