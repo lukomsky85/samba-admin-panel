@@ -63,9 +63,6 @@
     pointer-events: none;
     opacity: 0.4;
   }
-  @media (prefers-reduced-motion: reduce) {
-    #matrix-bg { display: none; }
-  }
   * { scrollbar-width: thin; scrollbar-color: var(--fg-dim) #060907; }
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-track { background: #060907; }
@@ -964,15 +961,15 @@
 const CSRF_TOKEN = "{{ csrf_token() }}";
 
 // --- Фоновая анимация "цифровой дождь" в цвете текущей темы ---
-// Уважает prefers-reduced-motion (проверка на CSS-уровне уже прячет канвас
-// через display:none, здесь дублируем на уровне JS, чтобы вообще не
-// запускать цикл отрисовки и не тратить CPU впустую на скрытый элемент).
 // ~20 кадров/сек — панель обычно открыта часами с активным
 // автообновлением данных, полный 60fps для фоновой красоты того не стоит.
+// Намеренно НЕ проверяем prefers-reduced-motion — это личная админ-панель,
+// а не публичный продукт, и раньше эта проверка тихо отключала эффект тем,
+// кто явно его хотел (диагностировано через реальную проверку в консоли
+// браузера: matchMedia(...).matches оказался true у системы админа).
 (function initMatrixBackground() {
   const canvas = document.getElementById('matrix-bg');
   if (!canvas) return;
-  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
   const ctx = canvas.getContext('2d');
   const FONT_SIZE = 16;

@@ -32,9 +32,6 @@
     pointer-events: none;
     opacity: 0.4;
   }
-  @media (prefers-reduced-motion: reduce) {
-    #matrix-bg { display: none; }
-  }
   body::before {
     content: "";
     position: fixed; inset: 0;
@@ -92,7 +89,6 @@
 (function initMatrixBackground() {
   const canvas = document.getElementById('matrix-bg');
   if (!canvas) return;
-  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
   const ctx = canvas.getContext('2d');
   const FONT_SIZE = 16;
