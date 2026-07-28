@@ -42,6 +42,17 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
+# CSRF-защита — панель делает много состояние-меняющих действий через POST
+# (удаление шар/пользователей, изменение конфигурации и т.д.), и без этого
+# сторонняя страница, открытая в том же браузере, где залогинен админ,
+# теоретически могла бы дёрнуть эти эндпоинты от его имени. flask-wtf
+# проверяет токен на каждый небезопасный метод (POST/PUT/PATCH/DELETE) —
+# и в форме логина (скрытое поле), и в заголовке X-CSRFToken для всех
+# запросов из JS (см. общую функцию post() и несколько прямых fetch() в
+# index.html, которые её не используют — им токен добавлен так же).
+from flask_wtf.csrf import CSRFProtect
+csrf = CSRFProtect(app)
+
 AUDIT_LOG_PATH = os.environ.get("SAMBAPANEL_AUDIT_LOG", "/var/log/sambapanel/audit.log")
 _AUDIT_LOCK = Lock()
 

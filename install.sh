@@ -295,7 +295,7 @@ sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet --upgrade pip
 # разное время получали бы что угодно текущее на PyPI на тот момент,
 # включая потенциально несовместимые breaking changes между установками
 # одной и той же версии панели на разных серверах.
-sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet "flask==3.1.3" "gunicorn==26.0.0"
+sudo -u "$PANEL_USER" "$PANEL_DIR/venv/bin/pip" install --quiet "flask==3.1.3" "gunicorn==26.0.0" "flask-wtf==1.3.0"
 
 # ---------------------------------------------------------------------------
 # 7. Пароль панели

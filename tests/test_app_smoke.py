@@ -60,6 +60,34 @@ def test_session_cookie_security_flags():
     assert appmod.app.config.get("SESSION_COOKIE_SAMESITE") == "Lax"
 
 
+# --- CSRF-защита: состояние-меняющие POST без токена должны отклоняться ---
+
+def test_csrf_protection_enabled():
+    assert appmod.csrf is not None
+
+
+def test_post_without_csrf_token_rejected(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    r = authed_client.post("/api/set_share_writable", json={"name": "test", "writable": True})
+    assert r.status_code == 400, (
+        "POST без CSRF-токена должен отклоняться — иначе сторонняя страница "
+        "в том же браузере могла бы дёрнуть этот эндпоинт от имени админа"
+    )
+
+
+def test_post_with_valid_csrf_token_accepted(authed_client, monkeypatch):
+    import re
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/set_share_writable",
+        json={"name": "test", "writable": True},
+        headers={"X-CSRFToken": token},
+    )
+    assert r.status_code == 200
+
+
 # --- Валидация полей группы шары (локальная / AD / гостевая) ---
 
 def test_validate_share_group_field_local():

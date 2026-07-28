@@ -66,6 +66,7 @@
     <p class="sub">доступ только из локальной сети<span class="cursor">&nbsp;</span></p>
     {% if error %}<p class="err">&gt; {{ error }}</p>{% endif %}
     <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label for="password">пароль панели</label>
       <input type="password" id="password" name="password" autofocus autocomplete="current-password">
       <button type="submit">[ enter ]</button>

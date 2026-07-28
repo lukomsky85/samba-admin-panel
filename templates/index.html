@@ -943,6 +943,11 @@
   </div>
 
 <script>
+// CSRF-токен — один на всю сессию страницы, вставляется сервером при
+// рендеринге. Добавляется заголовком X-CSRFToken во все POST-запросы
+// (см. post() ниже и несколько прямых fetch(), которые её не используют).
+const CSRF_TOKEN = "{{ csrf_token() }}";
+
 const consoleEl = document.getElementById('console');
 
 function logLine(text, cls) {
@@ -976,7 +981,7 @@ function stepNumberInput(id, direction) {
 async function post(url, body) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
     body: JSON.stringify(body)
   });
   return res.json();
@@ -1050,7 +1055,7 @@ async function loadDirBrowser(path) {
   list.innerHTML = '<span class="badge-off">загрузка...</span>';
   const res = await fetch('/api/list_directories', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
     body: JSON.stringify({path})
   });
   const data = await res.json();
@@ -1386,7 +1391,7 @@ async function loadRecycleBrowser() {
   list.innerHTML = '<span class="badge-off">загрузка...</span>';
   const res = await fetch('/api/list_recycle_bin', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
     body: JSON.stringify({name})
   });
   const data = await res.json();
@@ -2241,7 +2246,7 @@ async function findIsoFiles() {
   body.innerHTML = '<p class="badge-off">ищу...</p>';
   const res = await fetch('/api/list_iso_files', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
     body: JSON.stringify({path})
   });
   const data = await res.json();
@@ -2406,7 +2411,7 @@ async function startIsoUpload() {
   try {
     const findRes = await fetch('/api/iso_upload_find_resumable', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
       body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
     });
     const findData = await findRes.json();
@@ -2421,7 +2426,7 @@ async function startIsoUpload() {
     try {
       const initRes = await fetch('/api/iso_upload_init', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
         body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
       });
       const initData = await initRes.json();
@@ -2464,7 +2469,7 @@ async function isoUploadLoop() {
       try {
         const res = await fetch(`/api/iso_upload_chunk?session_id=${encodeURIComponent(sessionId)}&offset=${start}`, {
           method: 'POST',
-          headers: {'Content-Type': 'application/octet-stream'},
+          headers: {'Content-Type': 'application/octet-stream', 'X-CSRFToken': CSRF_TOKEN},
           body: chunk
         });
         const data = await res.json();
@@ -2564,7 +2569,7 @@ async function showSmartDetails(device) {
   box.textContent = 'загрузка...';
   const res = await fetch('/api/disk_smart_details', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
     body: JSON.stringify({device})
   });
   const data = await res.json();
