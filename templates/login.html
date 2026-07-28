@@ -17,12 +17,23 @@
     --panel: #0f1512;
   }
   * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%;
+  html {
     background: var(--bg);
+  }
+  body {
+    margin: 0; height: 100%;
+    background: transparent;
     color: var(--fg);
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
     display: flex; align-items: center; justify-content: center;
+  }
+  #matrix-bg {
+    position: fixed; inset: 0; z-index: -1;
+    pointer-events: none;
+    opacity: 0.16;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #matrix-bg { display: none; }
   }
   body::before {
     content: "";
@@ -61,6 +72,7 @@
 </style>
 </head>
 <body>
+<canvas id="matrix-bg"></canvas>
   <div class="box">
     <p class="title">root@fileserver:~# ./samba-admin --login</p>
     <p class="sub">доступ только из локальной сети<span class="cursor">&nbsp;</span></p>
@@ -72,5 +84,50 @@
       <button type="submit">[ enter ]</button>
     </form>
   </div>
+<script>
+// Тот же фоновый эффект "цифрового дождя", что и на основной панели —
+// здесь цвет темы фиксированный (страница логина не поддерживает
+// переключение тем), поэтому без чтения CSS-переменных на каждый кадр.
+(function initMatrixBackground() {
+  const canvas = document.getElementById('matrix-bg');
+  if (!canvas) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const ctx = canvas.getContext('2d');
+  const FONT_SIZE = 16;
+  const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const FG_COLOR = '#39ff6a';
+  const BG_FADE = 'rgba(11, 15, 13, 0.08)';
+  let drops = [];
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const columns = Math.floor(canvas.width / FONT_SIZE);
+    drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+  }
+
+  function draw() {
+    ctx.fillStyle = BG_FADE;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = FG_COLOR;
+    ctx.font = FONT_SIZE + 'px monospace';
+
+    for (let i = 0; i < drops.length; i++) {
+      const char = CHARS[Math.floor(Math.random() * CHARS.length)];
+      ctx.fillText(char, i * FONT_SIZE, drops[i] * FONT_SIZE);
+      if (drops[i] * FONT_SIZE > canvas.height && Math.random() > 0.975) {
+        drops[i] = 0;
+      }
+      drops[i]++;
+    }
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  setInterval(draw, 50);
+})();
+</script>
 </body>
 </html>
