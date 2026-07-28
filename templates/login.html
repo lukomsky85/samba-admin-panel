@@ -17,18 +17,18 @@
     --panel: #0f1512;
   }
   * { box-sizing: border-box; }
-  html {
-    background: var(--bg);
-  }
-  body {
+  html, body {
     margin: 0; height: 100%;
-    background: transparent;
+    background: var(--bg);
     color: var(--fg);
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
     display: flex; align-items: center; justify-content: center;
   }
+  /* Канвас идёт ПЕРВЫМ в разметке (см. <body>), z-index: 0 (не
+     отрицательный) — надёжнее, чем игра со стекинг-контекстами и
+     распространением фона html/body. */
   #matrix-bg {
-    position: fixed; inset: 0; z-index: -1;
+    position: fixed; inset: 0; z-index: 0;
     pointer-events: none;
     opacity: 0.4;
   }
@@ -50,6 +50,7 @@
     padding: 28px 26px;
     background: var(--panel);
     box-shadow: 0 0 24px rgba(57,255,106,0.08);
+    position: relative; z-index: 1;
   }
   .title { color: var(--fg); margin: 0 0 4px; font-size: 15px; letter-spacing: 1px; }
   .sub { color: var(--fg-dim); font-size: 12px; margin: 0 0 20px; }

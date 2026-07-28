@@ -43,27 +43,23 @@
     --amber: #ffb000; --red: #ff5555; --panel: #141414;
   }
   * { box-sizing: border-box; }
-  html {
-    background: var(--bg);
-    transition: background-color 0.35s ease;
-  }
-  body {
+  html, body {
     margin: 0; min-height: 100%;
-    background: transparent;
+    background: var(--bg);
     color: var(--fg);
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
-    transition: color 0.35s ease;
+    transition: background-color 0.35s ease, color 0.35s ease;
     scrollbar-width: thin;
     scrollbar-color: var(--fg-dim) #060907;
   }
-  /* Канвас с фоновой анимацией "цифрового дождя" — сидит МЕЖДУ фоном html
-     (самый нижний слой отрисовки, всегда) и обычным контентом страницы,
-     который идёт дальше в разметке с обычным z-index и поэтому рисуется
-     поверх независимо от того, что z-index здесь отрицательный. Так фон
-     html остаётся видимым по краям (там, где панелей нет), а сама
-     анимация видна везде, где сверху нет непрозрачного контента. */
+  /* Канвас с фоновой анимацией — идёт ПЕРВЫМ в разметке (см. <body>),
+     z-index: 0 (не отрицательный) и обычный порядок в DOM гарантируют,
+     что всё, что идёт после него в разметке (весь реальный контент
+     страницы), рисуется поверх — без тонкостей стекинг-контекстов и
+     распространения фона html/body, которые оказались менее предсказуемы
+     на практике, чем в теории. */
   #matrix-bg {
-    position: fixed; inset: 0; z-index: -1;
+    position: fixed; inset: 0; z-index: 0;
     pointer-events: none;
     opacity: 0.4;
   }
@@ -86,7 +82,7 @@
       rgba(0,0,0,0.12) 3px
     );
   }
-  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 20px 60px; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 20px 60px; position: relative; z-index: 1; }
   header {
     display: flex; justify-content: space-between; align-items: baseline;
     border-bottom: 1px solid var(--fg-dim); padding-bottom: 10px; margin-bottom: 22px;
