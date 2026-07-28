@@ -43,14 +43,32 @@
     --amber: #ffb000; --red: #ff5555; --panel: #141414;
   }
   * { box-sizing: border-box; }
-  html, body {
-    margin: 0; min-height: 100%;
+  html {
     background: var(--bg);
+    transition: background-color 0.35s ease;
+  }
+  body {
+    margin: 0; min-height: 100%;
+    background: transparent;
     color: var(--fg);
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
-    transition: background-color 0.35s ease, color 0.35s ease;
+    transition: color 0.35s ease;
     scrollbar-width: thin;
     scrollbar-color: var(--fg-dim) #060907;
+  }
+  /* Канвас с фоновой анимацией "цифрового дождя" — сидит МЕЖДУ фоном html
+     (самый нижний слой отрисовки, всегда) и обычным контентом страницы,
+     который идёт дальше в разметке с обычным z-index и поэтому рисуется
+     поверх независимо от того, что z-index здесь отрицательный. Так фон
+     html остаётся видимым по краям (там, где панелей нет), а сама
+     анимация видна везде, где сверху нет непрозрачного контента. */
+  #matrix-bg {
+    position: fixed; inset: 0; z-index: -1;
+    pointer-events: none;
+    opacity: 0.16;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #matrix-bg { display: none; }
   }
   * { scrollbar-width: thin; scrollbar-color: var(--fg-dim) #060907; }
   ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -304,6 +322,7 @@
 </style>
 </head>
 <body>
+<canvas id="matrix-bg"></canvas>
 <div class="wrap">
   <header>
     <h1>root@fileserver:~# samba-admin --panel</h1>
@@ -947,6 +966,73 @@
 // рендеринге. Добавляется заголовком X-CSRFToken во все POST-запросы
 // (см. post() ниже и несколько прямых fetch(), которые её не используют).
 const CSRF_TOKEN = "{{ csrf_token() }}";
+
+// --- Фоновая анимация "цифровой дождь" в цвете текущей темы ---
+// Уважает prefers-reduced-motion (проверка на CSS-уровне уже прячет канвас
+// через display:none, здесь дублируем на уровне JS, чтобы вообще не
+// запускать цикл отрисовки и не тратить CPU впустую на скрытый элемент).
+// ~20 кадров/сек — панель обычно открыта часами с активным
+// автообновлением данных, полный 60fps для фоновой красоты того не стоит.
+(function initMatrixBackground() {
+  const canvas = document.getElementById('matrix-bg');
+  if (!canvas) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const ctx = canvas.getContext('2d');
+  const FONT_SIZE = 16;
+  const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let columns = 0;
+  let drops = [];
+
+  function hexToRgba(hex, alpha) {
+    hex = hex.trim().replace('#', '');
+    if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function getThemeColors() {
+    const styles = getComputedStyle(document.documentElement);
+    return {
+      fg: (styles.getPropertyValue('--fg') || '#39ff6a').trim(),
+      bg: (styles.getPropertyValue('--bg') || '#0b0f0d').trim(),
+    };
+  }
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    columns = Math.floor(canvas.width / FONT_SIZE);
+    drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+  }
+
+  function draw() {
+    const { fg, bg } = getThemeColors();
+    // полупрозрачная заливка фоном ТЕКУЩЕЙ темы поверх предыдущего кадра —
+    // создаёт эффект следа/затухания символов, а не просто мигание
+    ctx.fillStyle = hexToRgba(bg, 0.08);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = fg;
+    ctx.font = FONT_SIZE + 'px monospace';
+
+    for (let i = 0; i < drops.length; i++) {
+      const char = CHARS[Math.floor(Math.random() * CHARS.length)];
+      ctx.fillText(char, i * FONT_SIZE, drops[i] * FONT_SIZE);
+
+      if (drops[i] * FONT_SIZE > canvas.height && Math.random() > 0.975) {
+        drops[i] = 0;
+      }
+      drops[i]++;
+    }
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  setInterval(draw, 50);
+})();
 
 const consoleEl = document.getElementById('console');
 
