@@ -1,5 +1,7 @@
 # samba-admin — терминальная веб-панель для Samba
 
+[![Тесты](https://github.com/lukomsky85/samba-admin-panel/actions/workflows/tests.yml/badge.svg)](https://github.com/lukomsky85/samba-admin-panel/actions/workflows/tests.yml)
+
 Веб-панель в стиле терминала для управления файловым сервером на Samba:
 пользователи, шары, корзина, антивирус, квоты, бэкапы, диски, Active
 Directory, уведомления и самообновление — всё из браузера, без необходимости
@@ -611,6 +613,10 @@ sudo ufw allow from 192.168.1.0/24 to any port 443 proto tcp
 ---
 
 ## Автотесты
+
+Прогоняются автоматически на GitHub Actions при каждом push/pull request
+(`.github/workflows/tests.yml`) — не нужно вручную помнить запустить их
+перед каждым релизом, статус виден бейджем вверху README. Локально:
 
 ```bash
 pip install -r requirements-dev.txt --break-system-packages
