@@ -538,6 +538,32 @@ def api_set_share_quota():
     return jsonify(ok=ok, output=output)
 
 
+@app.route("/api/check_quota_backend", methods=["POST"])
+@login_required
+def api_check_quota_backend():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    if not SHARENAME_RE.match(name):
+        return jsonify(ok=False, output="ERROR: недопустимое имя шары")
+    ok, output = run_helper(["check_quota_backend", name])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_enforced_quota", methods=["POST"])
+@login_required
+def api_set_enforced_quota():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    enabled = data.get("enabled", False)
+    mode = "yes" if enabled else "no"
+
+    if not SHARENAME_RE.match(name):
+        return jsonify(ok=False, output="ERROR: недопустимое имя шары")
+
+    ok, output = run_helper(["set_enforced_quota", name, mode])
+    return jsonify(ok=ok, output=output)
+
+
 @app.route("/api/set_share_backup", methods=["POST"])
 @login_required
 def api_set_share_backup():

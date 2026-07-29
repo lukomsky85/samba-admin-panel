@@ -20,7 +20,7 @@ import re
 import pytest
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXPECTED_FIELD_COUNT = 12
+EXPECTED_FIELD_COUNT = 13
 
 SCRIPTS_TO_CHECK = [
     "samba-backup.sh",
@@ -114,5 +114,5 @@ def test_shares_db_field_count_consistency(script_name):
         f"{script_name}: несоответствие количества полей shares.db "
         f"(ожидается {EXPECTED_FIELD_COUNT} — name|path|group|writable|hosts|"
         f"veto|recycle|retention_days|antivirus|quota_bytes|backup_enabled|"
-        f"full_audit):\n" + "\n".join(problems)
+        f"full_audit|enforced_quota):\n" + "\n".join(problems)
     )

@@ -242,6 +242,61 @@ validate_quota_bytes() {
     echo "$q"
 }
 
+# --- Enforced-квоты через XFS project quota ---
+PROJECT_IDS_MAP="/etc/sambapanel/project_ids.db"
+
+_quota_backend_for_path() {
+    # Определяет, поддерживает ли путь enforced-квоты: нужна именно XFS,
+    # смонтированная с опцией prjquota (или её алиасом pquota) — обычный
+    # ext4 (самая частая ФС по умолчанию) project quota не умеет вообще.
+    # Вывод: <статус>|<причина_или_тип_фс>|<точка_монтирования>
+    local path="$1" mountpoint fstype opts
+    mountpoint="$(df -P "$path" 2>/dev/null | tail -1 | awk '{print $NF}')"
+    if [[ -z "$mountpoint" ]]; then
+        echo "unsupported|не удалось определить точку монтирования|"
+        return
+    fi
+    fstype="$(findmnt -no FSTYPE "$mountpoint" 2>/dev/null)"
+    if [[ "$fstype" != "xfs" ]]; then
+        echo "unsupported|файловая система: ${fstype:-неизвестно} (нужна XFS)|${mountpoint}"
+        return
+    fi
+    opts="$(findmnt -no OPTIONS "$mountpoint" 2>/dev/null)"
+    if [[ "$opts" != *pquota* && "$opts" != *prjquota* ]]; then
+        echo "unsupported|XFS смонтирована без prjquota (добавь опцию в /etc/fstab и перемонтируй)|${mountpoint}"
+        return
+    fi
+    echo "xfs_prjquota|xfs|${mountpoint}"
+}
+
+_allocate_project_id() {
+    # Каждой шаре — свой числовой ID проекта XFS, начиная с 10000 (чтобы
+    # не пересекаться со служебными ID, которые теоретически может занять
+    # что-то другое в системе). Переиспользует уже выданный ID, если шара
+    # уже когда-то регистрировалась — важно для идемпотентности (повторное
+    # включение enforced-квоты не должно плодить новый ID каждый раз).
+    local share_name="$1"
+    mkdir -p "$(dirname "$PROJECT_IDS_MAP")"
+    touch "$PROJECT_IDS_MAP"
+
+    local existing
+    existing="$(grep "^${share_name}|" "$PROJECT_IDS_MAP" 2>/dev/null | cut -d'|' -f2)"
+    if [[ -n "$existing" ]]; then
+        echo "$existing"
+        return
+    fi
+
+    local max_id=9999 id
+    while IFS='|' read -r _ id; do
+        [[ -z "$id" ]] && continue
+        [[ "$id" -gt "$max_id" ]] && max_id="$id"
+    done < "$PROJECT_IDS_MAP"
+
+    local new_id=$((max_id + 1))
+    echo "${share_name}|${new_id}" >> "$PROJECT_IDS_MAP"
+    echo "$new_id"
+}
+
 validate_backup() {
     local b="${1:-no}"
     [[ -z "$b" ]] && b="no"
@@ -275,7 +330,7 @@ regenerate_conf() {
         echo "# АВТОГЕНЕРИРУЕТСЯ samba-admin-helper.sh — руками не редактировать,"
         echo "# правки будут потеряны при следующем изменении через панель."
         echo
-        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit; do
+        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit s_enforced; do
             [[ -z "$s_name" ]] && continue
             s_hosts="${s_hosts:-ALL}"
             s_veto="${s_veto:-NONE}"
@@ -581,7 +636,7 @@ case "$cmd" in
         chmod 2775 "$path/.quarantine"
     fi
 
-    echo "${name}|${path}|${group}|${writable}|${hosts}|${veto}|${recycle}|${retention}|${antivirus}|${quota}|${backup}|${full_audit}" >> "$SHARES_DB"
+    echo "${name}|${path}|${group}|${writable}|${hosts}|${veto}|${recycle}|${retention}|${antivirus}|${quota}|${backup}|${full_audit}|no" >> "$SHARES_DB"
     regenerate_conf
 
     extra=""
@@ -636,9 +691,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g _ h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g _ h v rc rd av q b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${writable}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${writable}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
     regenerate_conf
 
@@ -658,9 +713,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w _ v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w _ v rc rd av q b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${hosts}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${hosts}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
     regenerate_conf
 
@@ -684,9 +739,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h _ rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h _ rc rd av q b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${veto}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${veto}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
     regenerate_conf
 
@@ -711,9 +766,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v _ _ av q b a <<< "$line"
+    IFS='|' read -r n p g w h v _ _ av q b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${recycle}|${retention}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${recycle}|${retention}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
 
     if [[ "$recycle" == "yes" ]]; then
@@ -751,9 +806,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd _ q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd _ q b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${antivirus}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${antivirus}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
 
     if [[ "$antivirus" == "yes" ]]; then
@@ -788,9 +843,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av _ b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av _ b a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${quota}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${quota}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
 
     if [[ "$quota" == "0" ]]; then
@@ -798,6 +853,111 @@ case "$cmd" in
     else
         log "OK: шара '$name' — квота (мониторинговая) установлена: $quota байт"
     fi
+
+    # Если у этой шары включён enforced-режим — реальный лимит на уровне ФС
+    # тоже нужно обновить, иначе мониторинговое значение и то, что реально
+    # проверяет ядро при записи, разойдутся молча.
+    if [[ "${e:-no}" == "yes" ]]; then
+        backend_info="$(_quota_backend_for_path "$p")"
+        backend_status="${backend_info%%|*}"
+        mountpoint="${backend_info##*|}"
+        if [[ "$backend_status" == "xfs_prjquota" ]]; then
+            xfs_quota -x -c "limit -p bhard=${quota} ${name}" "$mountpoint" 2>&1
+            log "OK: enforced-лимит на уровне ФС тоже обновлён (${quota} байт)"
+        else
+            log "предупреждение: у шары '$name' включён enforced-режим, но путь больше не поддерживает XFS project quota — реальный лимит не обновлён"
+        fi
+    fi
+    ;;
+
+  check_quota_backend)
+    # Использование: check_quota_backend <name>
+    # Только проверка, ничего не меняет — узнать, можно ли для этой шары
+    # вообще включить enforced-квоту, ДО того как жать кнопку в интерфейсе.
+    name="${2:-}"
+    validate_share_name "$name"
+    ensure_db
+    line="$(grep "^${name}|" "$SHARES_DB" 2>/dev/null || true)"
+    if [[ -z "$line" ]]; then
+        echo "ERROR: шара '$name' не найдена" >&2
+        exit 1
+    fi
+    path="$(echo "$line" | cut -d'|' -f2)"
+    backend_info="$(_quota_backend_for_path "$path")"
+    echo "QUOTABACKEND|${backend_info}"
+    ;;
+
+  set_enforced_quota)
+    # Использование: set_enforced_quota <name> <yes|no>
+    # Включает/выключает РЕАЛЬНЫЙ, жёсткий лимит на уровне файловой системы
+    # (XFS project quota) — в дополнение к уже существующей мониторинговой
+    # квоте (тот же самый quota_bytes, две стороны одного значения: одна
+    # просто предупреждает в интерфейсе, вторая физически не даёт записать
+    # больше). Работает ТОЛЬКО если путь шары лежит на XFS, смонтированной
+    # с prjquota — обычный ext4 (частый выбор по умолчанию) этого не умеет
+    # вообще, и это не прихоть панели, а ограничение самой файловой системы.
+    name="${2:-}"; mode="${3:-}"
+    validate_share_name "$name"
+    if [[ "$mode" != "yes" && "$mode" != "no" ]]; then
+        echo "ERROR: режим должен быть 'yes' или 'no'" >&2
+        exit 1
+    fi
+
+    ensure_db
+    line="$(grep "^${name}|" "$SHARES_DB" 2>/dev/null || true)"
+    if [[ -z "$line" ]]; then
+        echo "ERROR: шара '$name' не найдена" >&2
+        exit 1
+    fi
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
+
+    if [[ "$mode" == "yes" ]]; then
+        if [[ "${q:-0}" == "0" ]]; then
+            echo "ERROR: сначала задай значение квоты (сейчас 0 = без лимита) — enforced-режим включает уже заданную квоту, а не сам придумывает значение" >&2
+            exit 1
+        fi
+        backend_info="$(_quota_backend_for_path "$p")"
+        backend_status="${backend_info%%|*}"
+        backend_reason="$(echo "$backend_info" | cut -d'|' -f2)"
+        mountpoint="${backend_info##*|}"
+        if [[ "$backend_status" != "xfs_prjquota" ]]; then
+            echo "ERROR: enforced-квота недоступна для этой шары — ${backend_reason}. Мониторинговая квота (текущее поведение) продолжает работать как обычно." >&2
+            exit 1
+        fi
+
+        projid="$(_allocate_project_id "$name")"
+        if ! grep -q "^${projid}:${p}$" /etc/projects 2>/dev/null; then
+            echo "${projid}:${p}" >> /etc/projects
+        fi
+        if ! grep -q "^${name}:${projid}$" /etc/projid 2>/dev/null; then
+            echo "${name}:${projid}" >> /etc/projid
+        fi
+
+        if ! xfs_quota -x -c "project -s ${name}" "$mountpoint" 2>&1; then
+            echo "ERROR: не удалось зарегистрировать проект XFS для шары '$name'" >&2
+            exit 1
+        fi
+        if ! xfs_quota -x -c "limit -p bhard=${q} ${name}" "$mountpoint" 2>&1; then
+            echo "ERROR: не удалось установить лимит для шары '$name'" >&2
+            exit 1
+        fi
+
+        e="yes"
+        log "OK: enforced-квота включена для '$name' — жёсткий лимит ${q} байт на уровне файловой системы (проект XFS #${projid})"
+    else
+        backend_info="$(_quota_backend_for_path "$p")"
+        backend_status="${backend_info%%|*}"
+        mountpoint="${backend_info##*|}"
+        if [[ "$backend_status" == "xfs_prjquota" ]]; then
+            xfs_quota -x -c "limit -p bhard=0 ${name}" "$mountpoint" 2>&1 || true
+        fi
+        e="no"
+        log "OK: enforced-квота выключена для '$name' — мониторинговая квота (${q} байт) продолжает работать как раньше"
+    fi
+
+    grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e}" >> "$SHARES_DB.tmp"
+    mv "$SHARES_DB.tmp" "$SHARES_DB"
     ;;
 
   set_share_group)
@@ -816,7 +976,7 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
 
     chmod_mode="2775"
     if [[ "$new_group" == "GUEST" ]]; then
@@ -842,7 +1002,7 @@ case "$cmd" in
     [[ -d "$p/.quarantine" ]] && { chown root:"$chown_target" "$p/.quarantine" 2>/dev/null || true; }
 
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${new_group}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${new_group}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
     regenerate_conf
 
@@ -878,9 +1038,9 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q _ a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q _ a e <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${backup}|${a:-no}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${backup}|${a:-no}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
 
     if [[ "$backup" == "yes" ]]; then
@@ -903,7 +1063,7 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
 
     recycle_dir="$p/.recycle"
     if [[ ! -d "$recycle_dir" ]]; then
@@ -930,7 +1090,7 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
 
     recycle_dir="$p/.recycle"
     if [[ ! -d "$recycle_dir" ]]; then
@@ -966,7 +1126,7 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
 
     relpath="$(printf '%s' "$relpath_b64" | base64 -d 2>/dev/null)"
     if [[ -z "$relpath" || "$relpath" == *".."* ]]; then
@@ -1008,7 +1168,7 @@ case "$cmd" in
     fi
 
     line="$(grep "^${name}|" "$SHARES_DB")"
-    IFS='|' read -r n p g w h v rc rd av q b a <<< "$line"
+    IFS='|' read -r n p g w h v rc rd av q b a e <<< "$line"
 
     quarantine_dir="$p/.quarantine"
     if [[ ! -d "$quarantine_dir" ]]; then
@@ -1040,7 +1200,7 @@ case "$cmd" in
     line="$(grep "^${name}|" "$SHARES_DB")"
     IFS='|' read -r n p g w h v rc rd av q b _ <<< "$line"
     grep -v "^${name}|" "$SHARES_DB" > "$SHARES_DB.tmp" || true
-    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${full_audit}" >> "$SHARES_DB.tmp"
+    echo "${n}|${p}|${g}|${w}|${h:-ALL}|${v:-NONE}|${rc:-no}|${rd:-0}|${av:-no}|${q:-0}|${b:-no}|${full_audit}|${e:-no}" >> "$SHARES_DB.tmp"
     mv "$SHARES_DB.tmp" "$SHARES_DB"
     regenerate_conf
 
@@ -1069,7 +1229,7 @@ case "$cmd" in
     if [[ ! -s "$SHARES_DB" ]]; then
         echo "  (шар пока нет)"
     else
-        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit; do
+        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit s_enforced; do
             [[ -z "$s_name" ]] && continue
             s_hosts="${s_hosts:-ALL}"
             s_veto="${s_veto:-NONE}"
@@ -1094,7 +1254,7 @@ case "$cmd" in
                 latest_file="$(ls -t "${backup_dest}/${s_name}-"*.tar.gz 2>/dev/null | head -1 || true)"
                 [[ -n "$latest_file" ]] && last_backup="$(stat -c %Y "$latest_file" 2>/dev/null || echo 0)"
             fi
-            echo "SHARE|${s_name}|${s_path}|${s_group}|${s_writable}|${s_hosts}|${s_veto}|${s_recycle}|${s_retention}|${recycle_count}|${s_av}|${quarantine_count}|${s_quota}|${s_backup}|${last_backup}|${s_audit}|${exists}"
+            echo "SHARE|${s_name}|${s_path}|${s_group}|${s_writable}|${s_hosts}|${s_veto}|${s_recycle}|${s_retention}|${recycle_count}|${s_av}|${quarantine_count}|${s_quota}|${s_backup}|${last_backup}|${s_audit}|${exists}|${s_enforced:-no}"
         done < "$SHARES_DB"
     fi
     ;;
@@ -1130,7 +1290,7 @@ case "$cmd" in
     if [[ ! -s "$SHARES_DB" ]]; then
         echo "  (шар пока нет)"
     else
-        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit; do
+        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit s_enforced; do
             [[ -z "$s_name" ]] && continue
             s_quota="${s_quota:-0}"
             if [[ ! -d "$s_path" ]]; then
@@ -1184,7 +1344,7 @@ case "$cmd" in
 
     ensure_db
     if [[ -s "$SHARES_DB" ]]; then
-        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit; do
+        while IFS='|' read -r s_name s_path s_group s_writable s_hosts s_veto s_recycle s_retention s_av s_quota s_backup s_audit s_enforced; do
             [[ -z "$s_name" ]] && continue
             [[ "${s_backup:-no}" != "yes" ]] && continue
 
@@ -2307,6 +2467,7 @@ EOF
     echo "                   set_share_recycle, empty_recycle_bin, list_recycle_bin, restore_recycle_file," >&2
     echo "                   set_share_antivirus, empty_quarantine, list_shares, set_share_group," >&2
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
+    echo "                   check_quota_backend, set_enforced_quota," >&2
     echo "                   get_backup_config, set_backup_config, set_backup_schedule, list_backup_files, run_backup_now," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2

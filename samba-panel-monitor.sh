@@ -57,7 +57,7 @@ fi
 
 # --- 1. Карантин антивируса и 2. превышение квоты — по каждой шаре ---
 if [[ -f "$SHARES_DB" ]]; then
-    while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit; do
+    while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit enforced; do
         [[ -z "$name" ]] && continue
         [[ ! -d "$path" ]] && continue
 

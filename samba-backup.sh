@@ -45,7 +45,7 @@ fi
 ok_count=0
 fail_count=0
 
-while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit; do
+while IFS='|' read -r name path group writable hosts veto recycle retention av quota backup full_audit enforced; do
     [[ -z "$name" ]] && continue
     [[ "${backup:-no}" != "yes" ]] && continue
 

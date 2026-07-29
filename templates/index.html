@@ -927,6 +927,11 @@
             <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('quota-modal-value', -1)">▼</button>
           </div>
         </div>
+
+        <div class="row" style="margin:14px 0 4px;">
+          <label style="margin:0;"><input type="checkbox" id="quota-modal-enforced" style="margin:0;"> enforced — жёсткий лимит на уровне файловой системы</label>
+        </div>
+        <p class="modal-sub" id="quota-modal-enforced-status" style="margin:0 0 10px;">проверяю поддержку...</p>
       </div>
       <div class="modal-actions">
         <button onclick="closeQuotaModal()">[ отмена ]</button>
@@ -1477,16 +1482,46 @@ async function saveRecycleModal() {
   refreshShares();
 }
 
-let quotaModalState = { name: null };
+let quotaModalState = { name: null, currentEnforced: false };
 
-function editQuota(name, quotaBytes) {
+async function editQuota(name, quotaBytes, currentEnforced) {
   quotaModalState.name = name;
+  quotaModalState.currentEnforced = !!currentEnforced;
   const gb = quotaBytes > 0 ? (quotaBytes / (1024 ** 3)) : 1;
   document.getElementById('quota-modal-sharename').textContent = name;
   document.getElementById('quota-modal-enabled').checked = quotaBytes > 0;
   document.getElementById('quota-modal-value').value = gb.toFixed(2);
   document.getElementById('quota-modal-value-row').style.display = quotaBytes > 0 ? 'block' : 'none';
+  document.getElementById('quota-modal-enforced').checked = !!currentEnforced;
   document.getElementById('quota-modal-overlay').style.display = 'flex';
+
+  const statusEl = document.getElementById('quota-modal-enforced-status');
+  const enforcedCheckbox = document.getElementById('quota-modal-enforced');
+  statusEl.textContent = 'проверяю поддержку enforced-режима...';
+  enforcedCheckbox.disabled = true;
+
+  try {
+    const res = await fetch('/api/check_quota_backend', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({name})
+    });
+    const data = await res.json();
+    const parts = (data.output || '').split('|');
+    // QUOTABACKEND|<status>|<причина_или_фс>|<точка_монтирования>
+    if (data.ok && parts[0] === 'QUOTABACKEND' && parts[1] === 'xfs_prjquota') {
+      statusEl.innerHTML = `<span class="badge-on">✔ доступно (XFS, точка монтирования ${escapeHtml(parts[3] || '?')})</span>`;
+      enforcedCheckbox.disabled = false;
+    } else {
+      const reason = parts[2] || data.output || 'причина неизвестна';
+      statusEl.innerHTML = `<span class="badge-off">✘ недоступно — ${escapeHtml(reason)}. Мониторинговая квота продолжит работать как обычно.</span>`;
+      enforcedCheckbox.checked = false;
+      enforcedCheckbox.disabled = true;
+    }
+  } catch (e) {
+    statusEl.textContent = 'не удалось проверить поддержку — enforced-режим временно недоступен';
+    enforcedCheckbox.disabled = true;
+  }
 }
 
 function closeQuotaModal() {
@@ -1498,8 +1533,18 @@ async function saveQuotaModal() {
   const enabled = document.getElementById('quota-modal-enabled').checked;
   const gb = parseFloat(document.getElementById('quota-modal-value').value) || 0;
   const quota_bytes = enabled ? Math.round(gb * 1024 ** 3) : 0;
+  const newEnforced = enabled && document.getElementById('quota-modal-enforced').checked;
+
   const data = await post('/api/set_share_quota', {name, quota_bytes});
   renderOutput('set_share_quota ' + name + ' ' + quota_bytes, data);
+
+  // enforced-режим меняем ОТДЕЛЬНЫМ вызовом, только если состояние реально
+  // изменилось — не дёргаем xfs_quota лишний раз, если чекбокс не трогали
+  if (data.ok && newEnforced !== quotaModalState.currentEnforced) {
+    const enfData = await post('/api/set_enforced_quota', {name, enabled: newEnforced});
+    renderOutput('set_enforced_quota ' + name + ' ' + newEnforced, enfData);
+  }
+
   closeQuotaModal();
   refreshShares();
 }
@@ -1635,8 +1680,8 @@ async function refreshShares() {
   let totalRecycle = 0, totalQuarantine = 0;
   lines.forEach(line => {
     const parts = line.split('|');
-    if (parts.length < 17) return;
-    const [, name, path, group, writable, hosts, veto, recycle, retention, recycleCount, antivirus, quarantineCount, quotaBytes, backupEnabled, lastBackup, fullAudit, status] = parts;
+    if (parts.length < 18) return;
+    const [, name, path, group, writable, hosts, veto, recycle, retention, recycleCount, antivirus, quarantineCount, quotaBytes, backupEnabled, lastBackup, fullAudit, status, enforcedQuota] = parts;
     const isWritable = writable === 'yes';
     const restrictedIp = hosts !== 'ALL';
     const restrictedVeto = veto !== 'NONE';
@@ -1647,6 +1692,7 @@ async function refreshShares() {
     totalRecycle += count;
     totalQuarantine += qCount;
     const quota = parseInt(quotaBytes, 10) || 0;
+    const enforcedOn = enforcedQuota === 'yes';
     const backupOn = backupEnabled === 'yes';
     const lastBackupTs = parseInt(lastBackup, 10) || 0;
     const auditOn = fullAudit === 'yes';
@@ -1655,7 +1701,7 @@ async function refreshShares() {
       recycleLabel = ' · корзина: ' + count + ' файл(ов)' + (retention !== '0' ? ' (авточистка ' + retention + 'д)' : ' (навсегда)');
     }
     const avLabel = avOn ? ' · антивирус: вкл' + (qCount > 0 ? ` (в карантине: ${qCount})` : '') : '';
-    const quotaLabel = quota > 0 ? ' · квота: ' + fmtGB(quota) + ' ГБ' : '';
+    const quotaLabel = quota > 0 ? ' · квота: ' + fmtGB(quota) + ' ГБ' + (enforcedOn ? ' ⛓ enforced' : '') : '';
     let backupLabel = '';
     if (backupOn) {
       backupLabel = lastBackupTs > 0
@@ -1691,7 +1737,7 @@ async function refreshShares() {
         ${recycleOn && count > 0 ? `<button class="danger" onclick="emptyRecycleBin('${name}', ${count})">очистить корзину (${count})</button>` : ''}
         <button onclick="toggleAntivirus('${name}', ${!avOn})">${avOn ? 'выключить антивирус' : 'включить антивирус'}</button>
         ${avOn && qCount > 0 ? `<button class="danger" onclick="emptyQuarantine('${name}', ${qCount})">очистить карантин (${qCount})</button>` : ''}
-        <button onclick="editQuota('${name}', ${quota})">${quota > 0 ? 'изменить квоту' : 'задать квоту'}</button>
+        <button onclick="editQuota('${name}', ${quota}, ${enforcedOn})">${quota > 0 ? 'изменить квоту' : 'задать квоту'}</button>
         <button onclick="toggleBackup('${name}', ${!backupOn})">${backupOn ? 'выключить бэкап' : 'включить бэкап'}</button>
         <button onclick="toggleFullAudit('${name}', ${!auditOn})">${auditOn ? 'выключить полный аудит' : 'включить полный аудит'}</button>
         <button class="danger" onclick="removeShare('${name}')">убрать шару</button>
