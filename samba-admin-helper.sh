@@ -1170,7 +1170,17 @@ case "$cmd" in
         dest_free="$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ')"
         dest_free="${dest_free:-0}"
     fi
-    echo "BACKUPCONF|${dest_b64}|${retain}|${dest_exists}|${dest_free}"
+
+    # Расписание читаем из самого systemd-таймера, а не из backup.conf —
+    # это единственный настоящий источник истины (что реально сработает),
+    # backup.conf может отстать, если кто-то поменял таймер руками мимо панели.
+    backup_time="02:30"
+    if [[ -f /etc/systemd/system/samba-backup.timer ]]; then
+        parsed_time="$(grep -oP '^OnCalendar=\*-\*-\* \K[0-9]{2}:[0-9]{2}' /etc/systemd/system/samba-backup.timer 2>/dev/null || true)"
+        [[ -n "$parsed_time" ]] && backup_time="$parsed_time"
+    fi
+
+    echo "BACKUPCONF|${dest_b64}|${retain}|${dest_exists}|${dest_free}|${backup_time}"
 
     ensure_db
     if [[ -s "$SHARES_DB" ]]; then
@@ -1230,11 +1240,69 @@ case "$cmd" in
         exit 1
     fi
 
+    # www-panel (пользователь, от которого работает сама панель, без прав
+    # root) должен уметь ЧИТАТЬ файлы бэкапов, чтобы отдавать их на
+    # скачивание через браузер — сами архивы создаёт root (через
+    # samba-backup.sh по расписанию), поэтому владение через группу, а не
+    # полная передача владения (root остаётся владельцем, www-panel может
+    # только читать и заходить внутрь, не писать/удалять).
+    chown root:www-panel "$dest" 2>/dev/null || true
+    chmod 750 "$dest"
+
     mkdir -p "$(dirname "$BACKUP_CONF")"
     printf 'BACKUP_DEST="%s"\nRETAIN_COUNT=%s\n' "$dest" "$retain_raw" > "$BACKUP_CONF"
     chmod 644 "$BACKUP_CONF"
 
     log "OK: бэкапы теперь идут в '$dest', хранится последних архивов на шару: $retain_raw"
+    ;;
+
+  set_backup_schedule)
+    # Использование: set_backup_schedule <HH:MM>
+    # Меняет время ежедневного запуска бэкапа. Правит сам systemd-таймер
+    # (единственный настоящий источник истины для расписания), а не только
+    # backup.conf — backup.conf для расписания вообще не читается systemd,
+    # это было бы просто украшением, которое ничего не меняло бы по факту.
+    time_raw="${2:-}"
+    if [[ ! "$time_raw" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]]; then
+        echo "ERROR: время должно быть в формате ЧЧ:ММ (например 02:30), от 00:00 до 23:59" >&2
+        exit 1
+    fi
+
+    timer_file="/etc/systemd/system/samba-backup.timer"
+    if [[ ! -f "$timer_file" ]]; then
+        echo "ERROR: $timer_file не найден — панель установлена не полностью, переустанови через install.sh" >&2
+        exit 1
+    fi
+
+    sed -i "s/^OnCalendar=.*/OnCalendar=*-*-* ${time_raw}:00/" "$timer_file"
+    systemctl daemon-reload
+    systemctl restart samba-backup.timer
+
+    log "OK: расписание бэкапа изменено на ${time_raw} ежедневно (±20 мин случайной задержки, чтобы не совпадать с другими задачами по расписанию)"
+    ;;
+
+  list_backup_files)
+    # Список ВСЕХ архивов в папке бэкапов (не только последний на шару, как
+    # в get_backup_config) — для скачивания конкретного файла, а не только
+    # самого свежего.
+    if [[ ! -f "$BACKUP_CONF" ]]; then
+        echo "ERROR: бэкап не настроен" >&2
+        exit 1
+    fi
+    dest=""
+    source "$BACKUP_CONF" 2>/dev/null || true
+    dest="${BACKUP_DEST:-}"
+    if [[ -z "$dest" || ! -d "$dest" ]]; then
+        echo "ERROR: папка назначения бэкапов не существует" >&2
+        exit 1
+    fi
+
+    find "$dest" -maxdepth 1 -name "*.tar.gz" -type f -printf '%f|%s|%T@\n' 2>/dev/null \
+        | sort -t'|' -k3 -rn \
+        | while IFS='|' read -r fname fsize fmtime; do
+            fname_b64="$(printf '%s' "$fname" | base64 -w0)"
+            echo "BACKUPFILE|${fname_b64}|${fsize}|${fmtime%.*}"
+        done
     ;;
 
   run_backup_now)
@@ -2239,7 +2307,7 @@ EOF
     echo "                   set_share_recycle, empty_recycle_bin, list_recycle_bin, restore_recycle_file," >&2
     echo "                   set_share_antivirus, empty_quarantine, list_shares, set_share_group," >&2
     echo "                   set_share_quota, set_share_backup, set_share_full_audit, file_audit_log," >&2
-    echo "                   get_backup_config, set_backup_config, run_backup_now," >&2
+    echo "                   get_backup_config, set_backup_config, set_backup_schedule, list_backup_files, run_backup_now," >&2
     echo "                   active_connections, disk_usage, list_block_devices, disk_smart_summary," >&2
     echo "                   disk_smart_details, mount_disk, unmount_disk, list_directories," >&2
     echo "                   list_iso_files, mount_iso, iso_finalize_upload, delete_iso_file, create_iso_directory (группа шары также может быть 'GUEST' — без пароля)," >&2

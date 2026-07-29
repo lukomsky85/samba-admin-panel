@@ -32,27 +32,44 @@ SCRIPTS_TO_CHECK = [
 
 def _find_shares_db_read_statements(filepath):
     """
-    Находит все места вида:
-      while IFS='|' read -r var1 var2 ... ; do      (построчный проход по файлу)
-      IFS='|' read -r var1 var2 ... <<< "$line"       (разбор одной уже найденной строки)
-    Возвращает список (номер_строки, [список_имён_переменных], исходный_текст).
+    Находит места вида:
+      while IFS='|' read -r var1 var2 ... ; do ... done < "$SHARES_DB"
+      IFS='|' read -r var1 var2 ... <<< "$line"       (разбор одной уже найденной строки shares.db)
+
+    Важно: `while IFS='|' read` сам по себе НЕ означает чтение shares.db —
+    тот же самый паттерн (тот же разделитель) используется и для разбора
+    вообще любых pipe-separated данных, например вывода `find -printf`
+    при листинге файлов бэкапа. Поэтому для конструкции "while...do"
+    дополнительно проверяем, что соответствующий "done" читает именно из
+    $SHARES_DB — иначе это ложное совпадение по счастливому совпадению
+    синтаксиса, а не реальное чтение схемы шар.
     """
     results = []
     with open(filepath, encoding="utf-8") as f:
         lines = f.readlines()
 
-    patterns = [
-        re.compile(r"while\s+IFS='\|'\s+read\s+-r\s+(.+?);\s*do"),
-        re.compile(r"IFS='\|'\s+read\s+-r\s+(.+?)\s*<<<"),
-    ]
+    while_pat = re.compile(r"while\s+IFS='\|'\s+read\s+-r\s+(.+?);\s*do")
+    heredoc_pat = re.compile(r"IFS='\|'\s+read\s+-r\s+(.+?)\s*<<<")
+    done_shares_db_pat = re.compile(r"done\s*<\s*\"?\$SHARES_DB\"?")
 
     for i, line in enumerate(lines, 1):
-        for pat in patterns:
-            m = pat.search(line)
-            if not m:
-                continue
+        m = while_pat.search(line)
+        if m:
+            # ищем соответствующий "done" в разумных пределах ниже по файлу
+            is_shares_db_loop = any(
+                done_shares_db_pat.search(lines[j])
+                for j in range(i, min(i + 60, len(lines)))
+            )
+            if is_shares_db_loop:
+                vars_list = m.group(1).split()
+                results.append((i, vars_list, line.strip()))
+            continue
+
+        m = heredoc_pat.search(line)
+        if m:
             vars_list = m.group(1).split()
             results.append((i, vars_list, line.strip()))
+
     return results
 
 

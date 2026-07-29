@@ -66,6 +66,11 @@ while IFS='|' read -r name path group writable hosts veto recycle retention av q
         --exclude="./.recycle" --exclude="./.quarantine" \
         -C "$path" . 2>/var/log/sambapanel/backup-${name}.err; then
         mv "$tmp_archive" "$archive"
+        # www-panel должен уметь ЧИТАТЬ архив, чтобы отдать его на скачивание
+        # через браузер — сам архив создаёт root, владение не передаём
+        # целиком, только группу на чтение (640: root rw, www-panel r).
+        chown root:www-panel "$archive" 2>/dev/null || true
+        chmod 640 "$archive"
         size="$(du -h "$archive" 2>/dev/null | cut -f1)"
         log "шара '$name': OK, архив создан (${size:-?})"
         ok_count=$((ok_count + 1))

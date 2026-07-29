@@ -564,15 +564,26 @@
       <input id="backup-dest-input" placeholder="/srv/backups">
       <label for="backup-retain-input">хранить последних архивов на шару</label>
       <input id="backup-retain-input" type="number" min="1" value="7">
+      <label for="backup-time-input">время ежедневного запуска (±20 мин случайной задержки)</label>
+      <input id="backup-time-input" type="time" value="02:30">
 
       <div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap;">
         <button onclick="refreshBackupConfig()">[ обновить ]</button>
         <button onclick="saveBackupConfig()">[ сохранить настройки ]</button>
+        <button onclick="saveBackupSchedule()">[ сохранить расписание ]</button>
         <button onclick="runBackupNow()">[ запустить бэкап сейчас ]</button>
       </div>
 
       <div id="backup-shares-list" style="margin-top:12px;"></div>
       <div class="output-box" id="backup-run-output" style="display:none; margin-top:10px;"></div>
+
+      <h2 style="margin-top:20px;">Файлы бэкапов</h2>
+      <div id="backup-files-list">
+        <p class="badge-off">жми «показать файлы», чтобы увидеть все архивы</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshBackupFiles()">[ показать файлы ]</button>
+      </div>
     </div>
   </div>
 
@@ -2387,16 +2398,18 @@ async function refreshBackupConfig() {
     const retain = parts[2] || '7';
     const exists = parts[3] === 'yes';
     const freeBytes = parts[4] || '0';
+    const scheduleTime = parts[5] || '02:30';
 
     document.getElementById('backup-dest-input').value = dest;
     document.getElementById('backup-retain-input').value = retain;
+    document.getElementById('backup-time-input').value = scheduleTime;
 
     if (!dest) {
       statusBox.innerHTML = '<p class="badge-off">бэкап ещё не настроен — укажи папку назначения ниже</p>';
     } else if (!exists) {
       statusBox.innerHTML = `<p class="line-fail">⚠ папка «${escapeHtml(dest)}» сейчас НЕ существует — бэкапы не будут создаваться, пока это не исправить</p>`;
     } else {
-      statusBox.innerHTML = `<p class="badge-on">✔ ${escapeHtml(dest)} · свободно ${fmtBytesG(freeBytes)} · хранится последних архивов на шару: ${escapeHtml(retain)}</p>`;
+      statusBox.innerHTML = `<p class="badge-on">✔ ${escapeHtml(dest)} · свободно ${fmtBytesG(freeBytes)} · хранится последних архивов на шару: ${escapeHtml(retain)} · запуск ежедневно в ${escapeHtml(scheduleTime)}</p>`;
     }
   }
 
@@ -2443,6 +2456,48 @@ async function runBackupNow() {
   const data = await post('/api/run_backup_now', {});
   box.textContent = data.output || '(пусто)';
   if (data.ok) refreshBackupConfig();
+}
+
+async function saveBackupSchedule() {
+  const time = document.getElementById('backup-time-input').value;
+  if (!time) { logLine('ERROR: укажи время запуска', 'line-err'); return; }
+  const data = await post('/api/set_backup_schedule', {time});
+  renderOutput('set_backup_schedule ' + time, data);
+  if (data.ok) refreshBackupConfig();
+}
+
+async function refreshBackupFiles() {
+  const box = document.getElementById('backup-files-list');
+  box.innerHTML = '<p class="badge-off">загрузка...</p>';
+
+  const res = await fetch('/api/list_backup_files');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('BACKUPFILE|'));
+  if (lines.length === 0) {
+    box.innerHTML = '<p class="badge-off">архивов пока нет</p>';
+    return;
+  }
+
+  let html = '';
+  lines.forEach(line => {
+    const p = line.split('|');
+    let fname;
+    try { fname = b64DecodeUtf8(p[1]); } catch (e) { return; }
+    const size = p[2] || '0';
+    const mtime = parseInt(p[3] || '0', 10);
+    const date = new Date(mtime * 1000).toLocaleString('ru-RU');
+    html += `
+      <div class="disk-row row-in">
+        <span class="badge-on" style="overflow-wrap:anywhere;">${escapeHtml(fname)} <span style="color:var(--fg-dim); font-size:12px;">(${fmtBytesG(size)}, ${date})</span></span>
+        <a href="/api/download_backup/${encodeURIComponent(fname)}" download>[ скачать ]</a>
+      </div>`;
+  });
+  box.innerHTML = html;
 }
 
 async function findIsoFiles() {

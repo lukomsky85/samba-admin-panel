@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from threading import Lock
 
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, send_from_directory
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SAMBAPANEL_SECRET") or secrets.token_hex(32)
@@ -603,6 +603,63 @@ def api_set_backup_config():
 def api_run_backup_now():
     ok, output = run_helper(["run_backup_now"])
     return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_backup_schedule", methods=["POST"])
+@login_required
+def api_set_backup_schedule():
+    data = request.get_json(force=True)
+    time_str = (data.get("time") or "").strip()
+    if not re.match(r"^([01][0-9]|2[0-3]):([0-5][0-9])$", time_str):
+        return jsonify(ok=False, output="ERROR: время должно быть в формате ЧЧ:ММ (например 02:30)")
+    ok, output = run_helper(["set_backup_schedule", time_str])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/list_backup_files")
+@login_required
+def api_list_backup_files():
+    ok, output = run_helper(["list_backup_files"])
+    return jsonify(ok=ok, output=output)
+
+
+def _read_backup_dest():
+    """Читает BACKUP_DEST напрямую из backup.conf (файл 644, читаемый без
+    привилегий) — не нужен лишний вызов привилегированного хелпера просто
+    чтобы узнать путь перед отдачей файла на скачивание."""
+    conf_path = "/etc/sambapanel/backup.conf"
+    if not os.path.isfile(conf_path):
+        return None
+    dest = None
+    try:
+        with open(conf_path, "r", encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r'^BACKUP_DEST="(.*)"$', line.strip())
+                if m:
+                    dest = m.group(1)
+    except OSError:
+        return None
+    return dest
+
+
+@app.route("/api/download_backup/<path:filename>")
+@login_required
+def api_download_backup(filename):
+    # Имя файла — строго наш собственный формат архива, ничего постороннего
+    # (в частности, никаких "..", слэшей и т.д. — хотя send_from_directory
+    # и сам по себе защищает от выхода за пределы базовой папки, лишняя
+    # проверка на уровне формата не помешает).
+    if not re.match(r"^[A-Za-z0-9_.-]+\.tar\.gz$", filename):
+        return jsonify(ok=False, output="ERROR: недопустимое имя файла"), 400
+
+    dest = _read_backup_dest()
+    if not dest or not os.path.isdir(dest):
+        return jsonify(ok=False, output="ERROR: папка бэкапов не настроена или не существует"), 400
+
+    try:
+        return send_from_directory(dest, filename, as_attachment=True)
+    except FileNotFoundError:
+        return jsonify(ok=False, output="ERROR: файл не найден"), 404
 
 
 @app.route("/api/list_block_devices")
