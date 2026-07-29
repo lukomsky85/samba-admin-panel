@@ -110,4 +110,36 @@ if command -v smartctl &>/dev/null; then
     done
 fi
 
+# --- 4. Срок действия TLS-сертификата панели ---
+# Самоподписанный сертификат выпускается на 825 дней при установке — без
+# этой проверки через два с лишним года он просто истечёт без единого
+# предупреждения заранее.
+CERT_FILE="/etc/ssl/sambapanel/cert.pem"
+if [[ -f "$CERT_FILE" ]] && command -v openssl &>/dev/null; then
+    end_date_raw="$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)"
+    if [[ -n "$end_date_raw" ]]; then
+        end_epoch="$(date -d "$end_date_raw" +%s 2>/dev/null || true)"
+        if [[ -n "$end_epoch" ]]; then
+            now_epoch="$(date +%s)"
+            days_left=$(( (end_epoch - now_epoch) / 86400 ))
+
+            # Пороги, а не просто "меньше 30 дней" — иначе от 30-го до
+            # 1-го дня было бы 30 одинаковых уведомлений подряд, каждое
+            # состояние срабатывает один раз при пересечении своего порога.
+            for threshold in 30 14 7 1; do
+                state_key="cert_expiry_${threshold}d"
+                if [[ "$days_left" -le "$threshold" ]]; then
+                    if state_changed "$state_key" "crossed"; then
+                        if [[ "$days_left" -le 0 ]]; then
+                            notify "TLS-сертификат панели УЖЕ ИСТЁК — обнови как можно скорее (переустановка через install.sh создаст новый, если удалить /etc/ssl/sambapanel вручную, или замени на Let's Encrypt)"
+                        else
+                            notify "TLS-сертификат панели истекает через ${days_left} дн. — обнови заранее (переустановка через install.sh создаст новый, если удалить /etc/ssl/sambapanel вручную, или замени на Let's Encrypt)"
+                        fi
+                    fi
+                fi
+            done
+        fi
+    fi
+fi
+
 log "проверка завершена"
