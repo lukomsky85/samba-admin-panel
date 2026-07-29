@@ -29,6 +29,7 @@ from functools import wraps
 from threading import Lock
 
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, send_from_directory
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SAMBAPANEL_SECRET") or secrets.token_hex(32)
@@ -63,8 +64,16 @@ def audit_log(action, ok, detail=""):
     try:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         ip = request.remote_addr or "unknown"
+        # Раньше "кто" в журнале — это был только IP. Теперь, если известна
+        # именная учётка (сессия уже аутентифицирована), пишем и её тоже —
+        # но не падаем, если session недоступна (например, при попытке
+        # входа с неверным паролем ещё нет установленной сессии).
+        try:
+            username = session.get("username", "-")
+        except Exception:
+            username = "-"
         status = "OK" if ok else "FAIL"
-        line = f"{ts} | {ip} | {status:4} | {action}"
+        line = f"{ts} | {ip} | {username:12} | {status:4} | {action}"
         if detail:
             first_line = detail.strip().splitlines()[0] if detail.strip() else ""
             if first_line:
@@ -82,6 +91,62 @@ if not ADMIN_PASSWORD:
         "Задай переменную окружения SAMBAPANEL_PASSWORD перед запуском.\n"
         "Пример: export SAMBAPANEL_PASSWORD='твой-пароль-для-входа-в-панель'"
     )
+
+# --- Именные учётки администраторов панели ---
+# Раньше был один общий пароль на всех (SAMBAPANEL_PASSWORD), и "кто это
+# сделал" в журнале действий — это был IP, а не имя человека. Учётки —
+# отдельная, СВОЯ база (не Unix-пользователи, не Samba-пользователи), нужны
+# только для входа в саму панель. Хранятся в /opt/sambapanel/admins.db —
+# у Flask (www-panel) и так есть право писать в свою собственную папку, для
+# такой задачи не нужен привилегированный хелпер через sudo, это не
+# системная операция.
+ADMINS_DB_PATH = os.environ.get("SAMBAPANEL_ADMINS_DB", "/opt/sambapanel/admins.db")
+_ADMINS_LOCK = Lock()
+ADMIN_USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _load_admins():
+    """Возвращает {username: password_hash}. Пустой словарь, если файла ещё нет."""
+    admins = {}
+    if not os.path.isfile(ADMINS_DB_PATH):
+        return admins
+    with open(ADMINS_DB_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) >= 2:
+                admins[parts[0]] = parts[1]
+    return admins
+
+
+def _save_admins(admins):
+    """Перезаписывает admins.db целиком (та же идемпотентная логика, что и
+    у shares.db в остальном проекте) — запись через временный файл и
+    атомарный rename, чтобы параллельный запрос никогда не увидел файл в
+    наполовину записанном состоянии."""
+    with _ADMINS_LOCK:
+        os.makedirs(os.path.dirname(ADMINS_DB_PATH) or ".", exist_ok=True)
+        tmp_path = ADMINS_DB_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for username, pw_hash in admins.items():
+                f.write(f"{username}|{pw_hash}\n")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, ADMINS_DB_PATH)
+
+
+def _ensure_bootstrap_admin():
+    """При самом первом запуске после обновления (admins.db ещё не
+    существует) создаёт одну учётку 'admin' из пароля, заданного при
+    установке (SAMBAPANEL_PASSWORD) — иначе панели, уже работающие без
+    единой именной учётки, потеряли бы доступ полностью после обновления."""
+    if os.path.isfile(ADMINS_DB_PATH):
+        return
+    _save_admins({"admin": generate_password_hash(ADMIN_PASSWORD)})
+
+
+_ensure_bootstrap_admin()
 
 HELPER = "/usr/local/sbin/samba-admin-helper.sh"
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -248,15 +313,21 @@ def login():
         wait = _login_check_blocked(ip)
         if wait > 0:
             error = f"слишком много неудачных попыток — подожди {int(wait)} сек. и попробуй снова"
-        elif request.form.get("password") == ADMIN_PASSWORD:
-            _login_register_success(ip)
-            audit_log("login", True)
-            session["authed"] = True
-            return redirect(url_for("index"))
         else:
-            delay = _login_register_failure(ip)
-            audit_log("login", False, "неверный пароль")
-            error = f"неверный пароль (следующая попытка через {int(delay)} сек.)"
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            admins = _load_admins()
+            pw_hash = admins.get(username)
+            if pw_hash and check_password_hash(pw_hash, password):
+                _login_register_success(ip)
+                session["authed"] = True
+                session["username"] = username
+                audit_log("login", True)
+                return redirect(url_for("index"))
+            else:
+                delay = _login_register_failure(ip)
+                audit_log("login", False, f"неверный логин/пароль (введено имя: {username or '?'})")
+                error = f"неверный логин или пароль (следующая попытка через {int(delay)} сек.)"
 
     return render_template("login.html", error=error)
 
@@ -265,6 +336,77 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/api/list_admins")
+@login_required
+def api_list_admins():
+    admins = _load_admins()
+    return jsonify(ok=True, admins=sorted(admins.keys()), current=session.get("username"))
+
+
+@app.route("/api/create_admin", methods=["POST"])
+@login_required
+def api_create_admin():
+    data = request.get_json(force=True)
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+
+    if not ADMIN_USERNAME_RE.match(username):
+        return jsonify(ok=False, output="ERROR: имя — только строчные латинские буквы/цифры/-/_, начинается с буквы")
+    if len(password) < 8:
+        return jsonify(ok=False, output="ERROR: пароль должен быть не короче 8 символов")
+
+    admins = _load_admins()
+    if username in admins:
+        return jsonify(ok=False, output=f"ERROR: администратор '{username}' уже существует")
+
+    admins[username] = generate_password_hash(password)
+    _save_admins(admins)
+    audit_log(f"create_admin {username}", True)
+    return jsonify(ok=True, output=f"OK: администратор '{username}' создан")
+
+
+@app.route("/api/delete_admin", methods=["POST"])
+@login_required
+def api_delete_admin():
+    data = request.get_json(force=True)
+    username = (data.get("username") or "").strip().lower()
+
+    admins = _load_admins()
+    if username not in admins:
+        return jsonify(ok=False, output=f"ERROR: администратор '{username}' не найден")
+    if username == session.get("username"):
+        return jsonify(ok=False, output="ERROR: нельзя удалить учётку, под которой вы сейчас вошли")
+    if len(admins) <= 1:
+        return jsonify(ok=False, output="ERROR: нельзя удалить последнего администратора — панель останется совсем без доступа")
+
+    del admins[username]
+    _save_admins(admins)
+    audit_log(f"delete_admin {username}", True)
+    return jsonify(ok=True, output=f"OK: администратор '{username}' удалён")
+
+
+@app.route("/api/change_own_password", methods=["POST"])
+@login_required
+def api_change_own_password():
+    data = request.get_json(force=True)
+    current_password = data.get("current_password") or ""
+    new_password = data.get("new_password") or ""
+
+    username = session.get("username")
+    admins = _load_admins()
+    pw_hash = admins.get(username)
+    if not pw_hash or not check_password_hash(pw_hash, current_password):
+        audit_log("change_own_password", False, "неверный текущий пароль")
+        return jsonify(ok=False, output="ERROR: текущий пароль указан неверно")
+    if len(new_password) < 8:
+        return jsonify(ok=False, output="ERROR: новый пароль должен быть не короче 8 символов")
+
+    admins[username] = generate_password_hash(new_password)
+    _save_admins(admins)
+    audit_log("change_own_password", True)
+    return jsonify(ok=True, output="OK: пароль изменён")
 
 
 @app.route("/")

@@ -77,8 +77,10 @@
     {% if error %}<p class="err">&gt; {{ error }}</p>{% endif %}
     <form method="POST">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label for="password">пароль панели</label>
-      <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+      <label for="username">имя пользователя</label>
+      <input type="text" id="username" name="username" autofocus autocomplete="username" autocapitalize="off" spellcheck="false">
+      <label for="password">пароль</label>
+      <input type="password" id="password" name="password" autocomplete="current-password">
       <button type="submit">[ enter ]</button>
     </form>
   </div>

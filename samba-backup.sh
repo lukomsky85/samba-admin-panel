@@ -106,6 +106,12 @@ config_files=()
 [[ -f /etc/sambapanel/notify.conf ]] && config_files+=(/etc/sambapanel/notify.conf)
 [[ -f /etc/msmtprc ]] && config_files+=(/etc/msmtprc)
 [[ -f /etc/samba/panel-shares.conf ]] && config_files+=(/etc/samba/panel-shares.conf)
+# admins.db хранит только хеши паролей именных учёток (необратимо,
+# безопаснее бэкапить, чем открытый текст) — в отличие от общего пароля
+# панели/секрета сессий, потеря этого файла означала бы потерю ВСЕХ
+# именных учёток, кроме одной bootstrap-учётки 'admin', пересоздаваемой
+# из переменной окружения при следующем запуске.
+[[ -f /opt/sambapanel/admins.db ]] && config_files+=(/opt/sambapanel/admins.db)
 
 if [[ "${#config_files[@]}" -gt 0 ]]; then
     log "бэкап конфигурации панели: ${config_files[*]}"

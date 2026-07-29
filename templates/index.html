@@ -346,6 +346,7 @@
     <button class="tab-btn" id="tabbtn-monitor" onclick="showTab('monitor')">[ Мониторинг ]</button>
     <button class="tab-btn" id="tabbtn-ad" onclick="showTab('ad')">[ Active Directory ]</button>
     <button class="tab-btn" id="tabbtn-updates" onclick="showTab('updates')">[ Обновления ]</button>
+    <button class="tab-btn" id="tabbtn-admins" onclick="showTab('admins')">[ Администраторы ]</button>
   </div>
 
   <div class="grid tab-content tab-content-active" id="tab-shares">
@@ -769,6 +770,41 @@
         <button onclick="refreshUpdateLog()">[ показать журнал обновления ]</button>
       </div>
       <div class="output-box" id="update-log-output" style="display:none; margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-admins">
+    <div class="panel userlist">
+      <h2>Администраторы панели</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Эти учётки — только для входа в саму панель, никак не связаны с
+        Unix- или Samba-пользователями. Журнал действий теперь пишет имя,
+        под которым выполнено действие, а не только IP-адрес.
+      </p>
+      <div id="admins-list-box">
+        <p class="badge-off">жми «обновить», чтобы увидеть список</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdmins()">[ обновить ]</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Добавить администратора</h2>
+      <label for="new-admin-username">имя пользователя (только a-z, 0-9, -, _)</label>
+      <input id="new-admin-username" placeholder="ivan">
+      <label for="new-admin-password">пароль (мин. 8 символов)</label>
+      <input id="new-admin-password" type="password">
+      <button onclick="createAdmin()">[ создать администратора ]</button>
+    </div>
+
+    <div class="panel">
+      <h2>Сменить свой пароль</h2>
+      <label for="change-pw-current">текущий пароль</label>
+      <input id="change-pw-current" type="password">
+      <label for="change-pw-new">новый пароль (мин. 8 символов)</label>
+      <input id="change-pw-new" type="password">
+      <button onclick="changeOwnPassword()">[ сменить пароль ]</button>
     </div>
   </div>
 
@@ -2498,6 +2534,64 @@ async function refreshBackupFiles() {
       </div>`;
   });
   box.innerHTML = html;
+}
+
+async function refreshAdmins() {
+  const box = document.getElementById('admins-list-box');
+  box.innerHTML = '<p class="badge-off">загрузка...</p>';
+
+  const res = await fetch('/api/list_admins');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const current = data.current || '';
+  let html = '';
+  data.admins.forEach(username => {
+    const isCurrent = username === current;
+    html += `
+      <div class="userline row-in">
+        <span class="badge-on">● ${escapeHtml(username)}${isCurrent ? ' <span style="color:var(--fg-dim); font-size:12px;">(вы сейчас вошли под этой учёткой)</span>' : ''}</span>
+        <span class="actions">
+          ${isCurrent ? '' : `<button class="danger" onclick="deleteAdmin('${escapeHtml(username)}')">удалить</button>`}
+        </span>
+      </div>`;
+  });
+  box.innerHTML = html || '<p class="badge-off">администраторов нет (быть такого не должно)</p>';
+}
+
+async function createAdmin() {
+  const username = document.getElementById('new-admin-username').value.trim();
+  const password = document.getElementById('new-admin-password').value;
+  if (!username || !password) { logLine('ERROR: укажи имя и пароль', 'line-err'); return; }
+  const data = await post('/api/create_admin', {username, password});
+  renderOutput('create_admin ' + username, data);
+  if (data.ok) {
+    document.getElementById('new-admin-username').value = '';
+    document.getElementById('new-admin-password').value = '';
+    refreshAdmins();
+  }
+}
+
+async function deleteAdmin(username) {
+  if (!confirm(`Удалить администратора '${username}'? Он больше не сможет войти в панель.`)) return;
+  const data = await post('/api/delete_admin', {username});
+  renderOutput('delete_admin ' + username, data);
+  if (data.ok) refreshAdmins();
+}
+
+async function changeOwnPassword() {
+  const current_password = document.getElementById('change-pw-current').value;
+  const new_password = document.getElementById('change-pw-new').value;
+  if (!current_password || !new_password) { logLine('ERROR: заполни оба поля', 'line-err'); return; }
+  const data = await post('/api/change_own_password', {current_password, new_password});
+  renderOutput('change_own_password', data);
+  if (data.ok) {
+    document.getElementById('change-pw-current').value = '';
+    document.getElementById('change-pw-new').value = '';
+  }
 }
 
 async function findIsoFiles() {

@@ -5,6 +5,7 @@ test_app_smoke.py — базовые дымовые тесты Flask-прило�
 запуске, а не только когда кто-то вручную вспомнит проверить.
 """
 import os
+import re
 import sys
 
 import pytest
@@ -14,6 +15,8 @@ sys.path.insert(0, PROJECT_DIR)
 
 os.environ.setdefault("SAMBAPANEL_PASSWORD", "test-password-for-pytest")
 os.environ.setdefault("SAMBAPANEL_SECRET", "test-secret-for-pytest-0123456789")
+os.environ.setdefault("SAMBAPANEL_ADMINS_DB", "/tmp/pytest-sambapanel-admins.db")
+os.environ.setdefault("SAMBAPANEL_AUDIT_LOG", "/tmp/pytest-sambapanel-audit.log")
 
 import app as appmod  # noqa: E402
 
@@ -127,3 +130,101 @@ def test_index_renders_without_version_file(authed_client, monkeypatch, tmp_path
     # доступ к панели из-за отсутствующего файла версии
     r = authed_client.get("/")
     assert r.status_code == 200
+
+
+# --- Именные учётки администраторов (вместо одного общего пароля) ---
+
+@pytest.fixture(autouse=True)
+def _isolated_admins_db(tmp_path, monkeypatch):
+    """Каждый тест — со своим чистым admins.db, чтобы тесты не зависели
+    друг от друга по порядку выполнения."""
+    db_path = str(tmp_path / "admins.db")
+    monkeypatch.setattr(appmod, "ADMINS_DB_PATH", db_path)
+    appmod._ensure_bootstrap_admin()
+    appmod._login_attempts.clear()
+    yield
+
+
+def test_bootstrap_admin_created_from_env_password():
+    admins = appmod._load_admins()
+    assert "admin" in admins
+    from werkzeug.security import check_password_hash
+    assert check_password_hash(admins["admin"], "test-password-for-pytest")
+
+
+def test_login_with_named_account(client):
+    token = re.search(
+        r'name="csrf_token" value="([^"]+)"', client.get("/login").get_data(as_text=True)
+    ).group(1)
+    r = client.post(
+        "/login",
+        data={"username": "admin", "password": "test-password-for-pytest", "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+
+
+def test_create_and_delete_admin(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    headers = {"X-CSRFToken": token}
+
+    r = authed_client.post(
+        "/api/create_admin", json={"username": "ivan", "password": "ivanpassword123"}, headers=headers
+    )
+    assert r.get_json()["ok"] is True
+
+    r = authed_client.get("/api/list_admins")
+    assert "ivan" in r.get_json()["admins"]
+
+    r = authed_client.post("/api/delete_admin", json={"username": "ivan"}, headers=headers)
+    assert r.get_json()["ok"] is True
+
+
+def test_cannot_delete_own_account(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "admin"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/delete_admin", json={"username": "admin"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+
+
+def test_cannot_delete_last_admin(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "nobody-in-particular"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    # единственный существующий администратор — 'admin' (из bootstrap)
+    r = authed_client.post(
+        "/api/delete_admin", json={"username": "admin"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+    assert "последнего" in r.get_json()["output"]
+
+
+def test_create_admin_rejects_short_password(authed_client):
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/create_admin", json={"username": "shorty", "password": "1234"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+
+
+def test_change_own_password_requires_correct_current(authed_client):
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "admin"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/change_own_password",
+        json={"current_password": "wrong", "new_password": "newpassword123"},
+        headers={"X-CSRFToken": token},
+    )
+    assert r.get_json()["ok"] is False
