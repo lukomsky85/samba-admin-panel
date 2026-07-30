@@ -258,12 +258,12 @@ _quota_backend_for_path() {
     fi
     fstype="$(findmnt -no FSTYPE "$mountpoint" 2>/dev/null)"
     if [[ "$fstype" != "xfs" ]]; then
-        echo "unsupported|файловая система: ${fstype:-неизвестно} (нужна XFS)|${mountpoint}"
+        echo "unsupported|файловая система: ${fstype:-неизвестно} — доступна только мониторинговая квота. Для реального (enforced) лимита нужен отдельный раздел, отформатированный в XFS и смонтированный с prjquota|${mountpoint}"
         return
     fi
     opts="$(findmnt -no OPTIONS "$mountpoint" 2>/dev/null)"
     if [[ "$opts" != *pquota* && "$opts" != *prjquota* ]]; then
-        echo "unsupported|XFS смонтирована без prjquota (добавь опцию в /etc/fstab и перемонтируй)|${mountpoint}"
+        echo "unsupported|раздел уже XFS, но смонтирован без prjquota — добавь опцию в /etc/fstab; простого 'mount -o remount' часто недостаточно, обычно нужен полный umount+mount (или перезагрузка)|${mountpoint}"
         return
     fi
     echo "xfs_prjquota|xfs|${mountpoint}"
