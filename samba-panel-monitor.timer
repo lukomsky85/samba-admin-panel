@@ -1,0 +1,10 @@
+[Unit]
+Description=Таймер мониторинга событий панели (раз в 15 минут)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

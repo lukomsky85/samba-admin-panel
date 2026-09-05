@@ -1,0 +1,6 @@
+[Unit]
+Description=Мониторинг событий панели (антивирус/квота/SMART)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/samba-panel-monitor.sh

@@ -1,0 +1,6 @@
+[Unit]
+Description=Очистка старых файлов в корзинах Samba-шар (samba-admin panel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/samba-recycle-cleanup.sh

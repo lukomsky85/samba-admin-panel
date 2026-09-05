@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>samba-admin :: login</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='favicon-16.png') }}">
+<link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+<style>
+  :root {
+    --bg: #0b0f0d;
+    --fg: #39ff6a;
+    --fg-dim: #1f8f42;
+    --amber: #ffb000;
+    --red: #ff5555;
+    --panel: #0f1512;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* Канвас идёт ПЕРВЫМ в разметке (см. <body>), z-index: 0 (не
+     отрицательный) — надёжнее, чем игра со стекинг-контекстами и
+     распространением фона html/body. */
+  #matrix-bg {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    opacity: 0.12;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,0.15) 3px
+    );
+    pointer-events: none;
+  }
+  .box {
+    width: min(420px, 90vw);
+    border: 1px solid var(--fg-dim);
+    padding: 28px 26px;
+    background: var(--panel);
+    box-shadow: 0 0 24px rgba(57,255,106,0.08);
+    position: relative; z-index: 1;
+  }
+  .title { color: var(--fg); margin: 0 0 4px; font-size: 15px; letter-spacing: 1px; }
+  .sub { color: var(--fg-dim); font-size: 12px; margin: 0 0 20px; }
+  label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 6px; }
+  input {
+    width: 100%; background: #060907; border: 1px solid var(--fg-dim);
+    color: var(--fg); font-family: inherit; font-size: 14px;
+    padding: 9px 10px; margin-bottom: 16px; outline: none;
+  }
+  input:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg) inset; }
+  button {
+    width: 100%; background: transparent; border: 1px solid var(--fg);
+    color: var(--fg); font-family: inherit; font-size: 14px; padding: 10px;
+    cursor: pointer; letter-spacing: 1px;
+  }
+  button:hover { background: var(--fg); color: #05100a; }
+  .err { color: var(--red); font-size: 12px; margin: -8px 0 14px; }
+  .cursor { display: inline-block; width: 8px; background: var(--fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<canvas id="matrix-bg"></canvas>
+  <div class="box">
+    <p class="title">root@fileserver:~# ./samba-admin --login</p>
+    <p class="sub">доступ только из локальной сети<span class="cursor">&nbsp;</span></p>
+    {% if error %}<p class="err">&gt; {{ error }}</p>{% endif %}
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">имя пользователя</label>
+      <input type="text" id="username" name="username" autofocus autocomplete="username" autocapitalize="off" spellcheck="false">
+      <label for="password">пароль</label>
+      <input type="password" id="password" name="password" autocomplete="current-password">
+      <button type="submit">[ enter ]</button>
+    </form>
+  </div>
+<script>
+// Тот же фоновый эффект "цифрового дождя", что и на основной панели —
+// здесь цвет темы фиксированный (страница логина не поддерживает
+// переключение тем), поэтому без чтения CSS-переменных на каждый кадр.
+(function initMatrixBackground() {
+  const canvas = document.getElementById('matrix-bg');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  const FONT_SIZE = 20;
+  const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const FG_COLOR = '#39ff6a';
+  const BG_FADE = 'rgba(11, 15, 13, 0.08)';
+  let drops = [];
+  let matrixTimer = null;
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const columns = Math.floor(canvas.width / FONT_SIZE);
+    drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+  }
+
+  function draw() {
+    ctx.fillStyle = BG_FADE;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = FG_COLOR;
+    ctx.font = FONT_SIZE + 'px monospace';
+
+    for (let i = 0; i < drops.length; i++) {
+      const char = CHARS[Math.floor(Math.random() * CHARS.length)];
+      ctx.fillText(char, i * FONT_SIZE, drops[i] * FONT_SIZE);
+      if (drops[i] * FONT_SIZE > canvas.height && Math.random() > 0.975) {
+        drops[i] = 0;
+      }
+      drops[i]++;
+    }
+  }
+
+  function startMatrixTimer() {
+    if (matrixTimer) return;
+    matrixTimer = setInterval(draw, 100);
+  }
+
+  function stopMatrixTimer() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer);
+    matrixTimer = null;
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopMatrixTimer();
+    else startMatrixTimer();
+  });
+  startMatrixTimer();
+})();
+</script>
+</body>
+</html>
