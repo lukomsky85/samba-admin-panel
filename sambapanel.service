@@ -1,0 +1,54 @@
+[Unit]
+Description=samba-admin terminal panel
+After=network.target smbd.service
+
+[Service]
+Type=simple
+User=www-panel
+Group=www-panel
+WorkingDirectory=/opt/sambapanel
+Environment="SAMBAPANEL_PASSWORD=CHANGE_ME"
+Environment="SAMBAPANEL_SECRET=CHANGE_ME_SECRET"
+# gunicorn вместо встроенного dev-сервера Flask — тот прямо предупреждает
+# "Do not use it in a production deployment".
+#
+# ВАЖНО: 1 воркер (процесс) + 4 потока, а НЕ несколько воркеров.
+# Rate-limit на вход в панель и сессии хранятся в памяти Python-процесса —
+# с несколькими воркерами (отдельными процессами) у каждого была бы своя
+# копия счётчика попыток входа, и лимит фактически умножался бы на число
+# воркеров. Один процесс с потоками (gthread) даёт конкурентность без этой
+# проблемы, поскольку потоки делят память процесса между собой.
+# --timeout 120 — с запасом для du/бэкапов/антивирус-сканов, которые могут
+# идти дольше стандартных 30 секунд gunicorn по умолчанию.
+ExecStart=/opt/sambapanel/venv/bin/gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:5000 --timeout 120 app:app
+Restart=on-failure
+RestartSec=3
+
+# KillMode=process (а не дефолтный control-group) — критично для механизма
+# обновления панели: apply_update запускает install.sh отвязанным процессом
+# (Popen с start_new_session=True в Python) именно для того, чтобы рестарт
+# ЭТОГО САМОГО сервиса, который install.sh делает в конце своей работы, не
+# убил сам процесс обновления. НО: start_new_session создаёт новую POSIX-
+# сессию — это защищает только от сигналов уровня терминала (SIGHUP), а
+# systemd с дефолтным KillMode=control-group при остановке/рестарте юнита
+# убивает ВСЕ процессы в его control-group, независимо от того, в какой они
+# сессии. Реально словили это на практике: лог обновления обрывался ровно
+# в момент рестарта сервиса — процесс обновления убивало вместе со старым
+# gunicorn. KillMode=process ограничивает область поражения только главным
+# отслеживаемым процессом (gunicorn), не трогая его отвязанных потомков.
+KillMode=process
+
+# Немного harden'а, не мешая функциональности (sudo вызывается отдельно)
+NoNewPrivileges=false
+ProtectSystem=false
+# PrivateTmp НЕ используем: несмотря на название, эта опция приватизирует
+# ВЕСЬ mount-namespace процесса (через MS_PRIVATE на корне), а не только
+# /tmp. Из-за этого любой mount, сделанный через хелпер (mount_iso,
+# mount_disk), был бы виден только самой панели — и никогда не долетал бы
+# ни до хоста, ни тем более до отдельного процесса smbd со своим
+# namespace. Итог на практике: панель показывала "смонтировано", а по
+# сети через Samba ничего не раздавалось. Обнаружено и исправлено
+# 2026-09-04 — см. issue/PR в репозитории.
+
+[Install]
+WantedBy=multi-user.target

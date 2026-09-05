@@ -1,0 +1,3164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>samba-admin :: panel</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='favicon-16.png') }}">
+<link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+<script>
+// Применяем сохранённую тему ДО отрисовки страницы — иначе будет короткая
+// вспышка зелёной темы по умолчанию перед переключением на сохранённую.
+(function () {
+  try {
+    var t = localStorage.getItem('sambapanel_theme');
+    if (t && t !== 'green') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<style>
+  :root {
+    --bg: #0b0f0d;
+    --fg: #39ff6a;
+    --fg-dim: #1f8f42;
+    --amber: #ffb000;
+    --red: #ff5555;
+    --panel: #0f1512;
+  }
+  html[data-theme="amber"] {
+    --bg: #120c02; --fg: #ffb000; --fg-dim: #8f6a1f;
+    --amber: #ffd873; --red: #ff5555; --panel: #1a1206;
+  }
+  html[data-theme="cyber"] {
+    --bg: #020b12; --fg: #39c9ff; --fg-dim: #1f6f8f;
+    --amber: #ffb000; --red: #ff5d7a; --panel: #071a24;
+  }
+  html[data-theme="blood"] {
+    --bg: #120303; --fg: #ff4d4d; --fg-dim: #8f2626;
+    --amber: #ffb000; --red: #ff8080; --panel: #1a0808;
+  }
+  html[data-theme="mono"] {
+    --bg: #0a0a0a; --fg: #e8e8e8; --fg-dim: #6b6b6b;
+    --amber: #ffb000; --red: #ff5555; --panel: #141414;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    transition: background-color 0.35s ease, color 0.35s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--fg-dim) #060907;
+  }
+  /* Канвас с фоновой анимацией — идёт ПЕРВЫМ в разметке (см. <body>),
+     z-index: 0 (не отрицательный) и обычный порядок в DOM гарантируют,
+     что всё, что идёт после него в разметке (весь реальный контент
+     страницы), рисуется поверх — без тонкостей стекинг-контекстов и
+     распространения фона html/body, которые оказались менее предсказуемы
+     на практике, чем в теории. */
+  #matrix-bg {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    opacity: 0.12;
+  }
+  * { scrollbar-width: thin; scrollbar-color: var(--fg-dim) #060907; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: #060907; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--fg-dim); border: 1px solid #060907; border-radius: 0;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg); }
+  ::-webkit-scrollbar-corner { background: #060907; }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; z-index: 999; pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,0.12) 3px
+    );
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 20px 60px; position: relative; z-index: 1; }
+  header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid var(--fg-dim); padding-bottom: 10px; margin-bottom: 22px;
+  }
+  header h1 { font-size: 14px; margin: 0; letter-spacing: 1px; font-weight: 400; }
+  header a { color: var(--fg-dim); font-size: 12px; text-decoration: none; }
+  header a:hover { color: var(--red); }
+
+  /* Обычные ссылки в контенте (не в шапке) — по умолчанию браузер рисует
+     их синим, что выбивается из зелёной терминальной темы полностью. */
+  a { color: var(--fg); text-decoration: underline; transition: color 0.15s ease; }
+  a:visited { color: var(--fg); }
+  a:hover { color: var(--amber); }
+  code { color: var(--amber); background: rgba(255,176,0,0.08); padding: 1px 4px; border-radius: 2px; }
+
+  .grid { column-count: 2; column-gap: 18px; }
+  @media (max-width: 760px) { .grid { column-count: 1; } }
+
+  .summary-bar {
+    display: flex; gap: 0; margin-bottom: 22px;
+    border: 1px solid var(--fg-dim); background: var(--panel);
+  }
+  .summary-stat {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    padding: 14px 8px; border-right: 1px dashed #163a22;
+  }
+  .summary-stat:last-child { border-right: none; }
+  .summary-num { font-size: 22px; color: var(--fg); line-height: 1.3; }
+  .summary-label { font-size: 10px; color: var(--fg-dim); text-align: center; margin-top: 2px; }
+  @media (max-width: 700px) { .summary-bar { flex-wrap: wrap; } .summary-stat { flex: 1 1 45%; border-right: none; border-bottom: 1px dashed #163a22; } }
+
+  .tabs-bar { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tab-btn {
+    background: transparent; border: 1px solid var(--fg-dim); color: var(--fg-dim);
+    font-family: inherit; font-size: 12px; padding: 8px 16px; cursor: pointer; letter-spacing: 0.5px;
+    transition: all 0.18s ease;
+  }
+  .tab-btn:hover { border-color: var(--fg); color: var(--fg); }
+  .tab-btn.tab-active { border-color: var(--fg); color: var(--fg); background: rgba(57,255,106,0.08); }
+  .tab-content { display: none; }
+  .tab-content.tab-content-active { display: block; animation: tabFadeIn 0.3s ease; }
+  @keyframes tabFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .live-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--fg-dim); margin-right: 5px; transition: background-color 0.3s ease;
+  }
+  .live-dot.live-on { background: var(--fg); animation: livepulse 1.4s ease-in-out infinite; }
+  @keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .panel {
+    border: 1px solid var(--fg-dim); background: var(--panel); padding: 16px 18px;
+    transition: background-color 0.35s ease, border-color 0.35s ease;
+    break-inside: avoid; margin-bottom: 18px; display: block;
+  }
+  .panel h2 { font-size: 12px; color: var(--fg-dim); margin: 0 0 14px; letter-spacing: 1px; text-transform: uppercase; transition: color 0.35s ease; }
+
+  label { display: block; font-size: 11px; color: var(--fg-dim); margin-bottom: 4px; transition: color 0.35s ease; }
+  input, select {
+    width: 100%; background: #060907; border: 1px solid var(--fg-dim);
+    color: var(--fg); font-family: inherit; font-size: 13px;
+    padding: 8px 9px; margin-bottom: 12px; outline: none;
+    transition: border-color 0.18s ease, color 0.35s ease, box-shadow 0.18s ease;
+  }
+  input:focus, select:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg) inset; }
+
+  /* Прячем нативные системные стрелки числовых полей — они серые/белые и
+     никак не поддаются кастомной раскраске напрямую (браузеры сильно
+     ограничивают, что можно менять в этих псевдоэлементах), поэтому рисуем
+     свои поверх, а не пытаемся перекрасить оригинал. */
+  input[type="number"] { -moz-appearance: textfield; padding-right: 26px; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  .number-input-wrap { position: relative; margin-bottom: 12px; }
+  .number-input-wrap input[type="number"] { margin-bottom: 0; }
+  .number-spinner {
+    position: absolute; right: 1px; top: 1px; bottom: 1px; width: 22px;
+    display: flex; flex-direction: column;
+  }
+  .number-spinner button {
+    flex: 1; padding: 0; margin: 0; min-width: 0;
+    border: none; border-left: 1px solid var(--fg-dim);
+    background: transparent; color: var(--fg-dim);
+    font-size: 8px; line-height: 1; letter-spacing: 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: background-color 0.12s ease, color 0.12s ease;
+  }
+  .number-spinner button:active { transform: none; }
+  .number-spinner .spin-up { border-bottom: 1px solid var(--fg-dim); border-radius: 0; }
+  .number-spinner button:hover { background: var(--fg); color: #05100a; }
+
+  input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    width: 16px; height: 16px; min-width: 16px;
+    background: #060907; border: 1px solid var(--fg-dim);
+    padding: 0; margin: 0; position: relative; cursor: pointer; flex-shrink: 0;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  input[type="checkbox"]:hover { border-color: var(--fg); }
+  input[type="checkbox"]:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
+  input[type="checkbox"]:checked { background: var(--fg); border-color: var(--fg); }
+  input[type="checkbox"]:checked::after {
+    content: "✓";
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; line-height: 1; color: #05100a; font-weight: bold;
+  }
+  button {
+    background: transparent; border: 1px solid var(--fg);
+    color: var(--fg); font-family: inherit; font-size: 12px; padding: 8px 14px;
+    cursor: pointer; letter-spacing: 0.5px;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.35s ease, transform 0.1s ease;
+  }
+  button:hover { background: var(--fg); color: #05100a; }
+  button:active { transform: scale(0.96); }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.danger:hover { background: var(--red); color: #1a0000; }
+  .row { display: flex; gap: 8px; align-items: center; }
+
+  .file-picker-btn {
+    display: inline-block; background: transparent; border: 1px solid var(--fg);
+    color: var(--fg); font-family: inherit; font-size: 12px; padding: 8px 14px;
+    cursor: pointer; letter-spacing: 0.5px; flex-shrink: 0; margin: 0;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.35s ease, transform 0.1s ease;
+  }
+  .file-picker-btn:hover { background: var(--fg); color: #05100a; }
+  .file-picker-btn:active { transform: scale(0.96); }
+
+  @keyframes rowFadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
+  .row-in { animation: rowFadeIn 0.25s ease; }
+
+  .theme-picker { display: flex; gap: 6px; align-items: center; }
+  .theme-dot {
+    width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.25); transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+  .theme-dot:hover { transform: scale(1.15); }
+  .theme-dot.theme-active { border-color: #fff; border-width: 2px; }
+
+  .userlist { column-span: all; }
+  .userline {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 0; border-bottom: 1px dashed #163a22; font-size: 13px;
+    transition: border-color 0.35s ease;
+  }
+  .userline:last-child { border-bottom: none; }
+  .badge-on { color: var(--fg); transition: color 0.35s ease; }
+  .badge-off { color: var(--fg-dim); transition: color 0.35s ease; }
+  .userline .actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .userline .actions button { font-size: 11px; padding: 4px 8px; margin-left: 0; }
+
+  .console {
+    grid-column: 1 / -1;
+    background: #05080600; border: 1px solid var(--fg-dim);
+    background: #060907; height: 260px; overflow-y: auto;
+    padding: 12px 14px; font-size: 12.5px; white-space: pre-wrap;
+    line-height: 1.5; transition: border-color 0.35s ease;
+  }
+  .console .line-cmd { color: var(--amber); }
+  .console .line-err { color: var(--red); }
+  .console .line-ok { color: var(--fg); }
+  .cursor { display: inline-block; width: 8px; background: var(--fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .output-box {
+    grid-column: 1 / -1;
+    background: #060907; border: 1px solid var(--fg-dim);
+    max-height: 260px; overflow-y: auto;
+    padding: 12px 14px; font-size: 12px; white-space: pre-wrap;
+    line-height: 1.5; margin-top: 4px;
+    transition: border-color 0.35s ease, box-shadow 0.4s ease;
+  }
+  .output-box .line-fail { color: var(--red); }
+  .output-box.just-updated { box-shadow: 0 0 0 1px var(--fg) inset; }
+
+  .ad-user-picker {
+    max-height: 220px; overflow-y: auto; border: 1px solid var(--fg-dim);
+    background: #060907;
+  }
+  .ad-user-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; cursor: pointer; font-size: 13px;
+    border-bottom: 1px dashed #163a22; transition: background-color 0.12s ease;
+  }
+  .ad-user-row:last-child { border-bottom: none; }
+  .ad-user-row:hover { background: rgba(57,255,106,0.08); }
+  .ad-user-row.ad-user-selected { background: rgba(57,255,106,0.16); }
+  .ad-user-row input[type="checkbox"] { margin: 0; flex-shrink: 0; pointer-events: none; }
+  .ad-user-row.ad-user-hidden { display: none; }
+
+  .disk-row {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px 0; border-bottom: 1px dashed #163a22;
+  }
+  .disk-row:last-child { border-bottom: none; }
+  .disk-bar-track {
+    height: 6px; background: #0f1512; border: 1px solid var(--fg-dim); overflow: hidden;
+  }
+  .disk-bar-fill { height: 100%; background: var(--fg); }
+  .disk-bar-fill.warn { background: var(--amber); }
+  .disk-bar-fill.danger { background: var(--red); }
+
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,0.75);
+    display: none; align-items: center; justify-content: center;
+    animation: modalOverlayIn 0.2s ease;
+  }
+  @keyframes modalOverlayIn { from { background: rgba(0,0,0,0); } to { background: rgba(0,0,0,0.75); } }
+  .modal-box {
+    width: min(420px, 90vw);
+    border: 1px solid var(--fg-dim);
+    background: var(--panel);
+    padding: 20px 22px;
+    box-shadow: 0 0 30px rgba(57,255,106,0.12);
+    animation: modalBoxIn 0.25s cubic-bezier(.2,.9,.3,1.2);
+    transition: background-color 0.35s ease, border-color 0.35s ease;
+  }
+  @keyframes modalBoxIn { from { opacity: 0; transform: scale(0.94) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .modal-title { color: var(--fg); font-size: 13px; margin: 0 0 6px; }
+  .modal-sub { color: var(--fg-dim); font-size: 11px; margin: 0 0 14px; line-height: 1.4; }
+  .hosts-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 0; border-bottom: 1px dashed #163a22; font-size: 13px;
+  }
+  .hosts-row:last-child { border-bottom: none; }
+  .hosts-row button { font-size: 11px; padding: 3px 8px; }
+  .modal-add-row { display: flex; gap: 8px; margin-top: 12px; }
+  .modal-add-row input { margin-bottom: 0; flex: 1; }
+  .modal-add-row button { flex-shrink: 0; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+</style>
+</head>
+<body>
+<canvas id="matrix-bg"></canvas>
+<div class="wrap">
+  <header>
+    <h1>root@fileserver:~# samba-admin --panel</h1>
+    <div class="row" style="gap:16px;">
+      <a href="#" onclick="showTab('about'); return false;" title="о проекте">[ О проекте ]</a>
+      <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener" title="исходный код на GitHub">[ GitHub · lukomsky85 ]</a>
+      <div class="theme-picker" id="theme-picker" title="цветовая тема">
+        <span class="theme-dot" data-theme="green" style="background:#39ff6a;" onclick="setTheme('green')"></span>
+        <span class="theme-dot" data-theme="amber" style="background:#ffb000;" onclick="setTheme('amber')"></span>
+        <span class="theme-dot" data-theme="cyber" style="background:#39c9ff;" onclick="setTheme('cyber')"></span>
+        <span class="theme-dot" data-theme="blood" style="background:#ff4d4d;" onclick="setTheme('blood')"></span>
+        <span class="theme-dot" data-theme="mono" style="background:#e8e8e8;" onclick="setTheme('mono')"></span>
+      </div>
+      <a href="{{ url_for('logout') }}">[ выйти ]</a>
+    </div>
+  </header>
+
+  <div class="summary-bar" id="summary-bar">
+    <div class="summary-stat"><span class="summary-num" id="summary-shares">—</span><span class="summary-label">шар</span></div>
+    <div class="summary-stat"><span class="summary-num" id="summary-users">—</span><span class="summary-label">польз. (доступ/всего)</span></div>
+    <div class="summary-stat"><span class="summary-num" id="summary-recycle">—</span><span class="summary-label">файлов в корзинах</span></div>
+    <div class="summary-stat"><span class="summary-num" id="summary-quarantine">—</span><span class="summary-label">в карантине</span></div>
+  </div>
+
+  <div class="tabs-bar">
+    <button class="tab-btn tab-active" id="tabbtn-shares" onclick="showTab('shares')">[ Шары и пользователи ]</button>
+    <button class="tab-btn" id="tabbtn-disks" onclick="showTab('disks')">[ Диски ]</button>
+    <button class="tab-btn" id="tabbtn-monitor" onclick="showTab('monitor')">[ Мониторинг ]</button>
+    <button class="tab-btn" id="tabbtn-ad" onclick="showTab('ad')">[ Active Directory ]</button>
+    <button class="tab-btn" id="tabbtn-updates" onclick="showTab('updates')">[ Обновления ]</button>
+    <button class="tab-btn" id="tabbtn-admins" onclick="showTab('admins')">[ Администраторы ]</button>
+  </div>
+
+  <div class="grid tab-content tab-content-active" id="tab-shares">
+    <div class="panel">
+      <h2>Создать пользователя</h2>
+      <label for="new-username">имя пользователя (только a-z, 0-9, -, _)</label>
+      <input id="new-username" placeholder="ivan">
+      <label for="new-password">пароль (мин. 8 символов, unix + samba)</label>
+      <input id="new-password" type="password" placeholder="••••••••">
+      <button onclick="createUser()">[ создать + подключить к шаре ]</button>
+    </div>
+
+    <div class="panel">
+      <h2>Сменить samba-пароль</h2>
+      <label for="pw-username">имя пользователя</label>
+      <input id="pw-username" placeholder="ivan">
+      <label for="pw-password">новый пароль</label>
+      <input id="pw-password" type="password" placeholder="••••••••">
+      <button onclick="setPassword()">[ обновить пароль ]</button>
+    </div>
+
+    <div class="panel">
+      <h2>Создать шару</h2>
+      <label for="share-name">имя шары (появится как \\server\ИМЯ)</label>
+      <input id="share-name" placeholder="documents" oninput="onShareNameInput()">
+      <label for="share-path">путь на диске</label>
+      <div class="row" style="margin-bottom:4px; align-items:flex-start;">
+        <input id="share-path" placeholder="/srv/documents" oninput="onSharePathManualEdit()" style="margin-bottom:0;">
+        <button type="button" onclick="openDirBrowser()" style="flex-shrink:0;">[ обзор ]</button>
+      </div>
+      <p class="modal-sub" style="margin:0 0 12px;">Не уверен, что писать? Подставится само по имени шары (обычно <code>/srv/имя-шары</code>) — можно так и оставить. Папки не существует — не страшно, она создастся сама. Кнопка «обзор» покажет реальные папки на сервере, чтобы не гадать вслепую.</p>
+      <label for="share-access-type">тип доступа</label>
+      <select id="share-access-type" onchange="onAccessTypeChange('share')">
+        <option value="local">Локальная Unix-группа</option>
+        <option value="ad_group">Группа Active Directory</option>
+        <option value="ad_users">Конкретные пользователи AD</option>
+        <option value="guest">Гостевой доступ (без пароля)</option>
+      </select>
+
+      <div id="share-access-guest-block" style="display:none;">
+        <p class="modal-sub" style="margin:0 0 12px; color:var(--red);">
+          ⚠ Подключиться сможет кто угодно в сети без логина и пароля (ограничить можно только по IP/подсети ниже). Папка станет доступна на запись всем локальным процессам на сервере, не только через Samba. Не используй для чувствительных данных.
+        </p>
+      </div>
+
+      <div id="share-access-local-block">
+        <label for="share-group">группа с доступом</label>
+        <input id="share-group" placeholder="sharegroup" value="sharegroup">
+      </div>
+
+      <div id="share-access-adgroup-block" style="display:none;">
+        <label for="share-adgroup-select">группа AD</label>
+        <select id="share-adgroup-select"><option value="">жми «обновить список» ниже</option></select>
+        <div class="row" style="margin:4px 0 12px;">
+          <button type="button" onclick="loadAdGroupsInto('share-adgroup-select')">[ обновить список групп AD ]</button>
+        </div>
+      </div>
+
+      <div id="share-access-adusers-block" style="display:none;">
+        <label for="share-adusers-filter">пользователи AD</label>
+        <input id="share-adusers-filter" placeholder="фильтр по имени..." oninput="filterAdUserPicker('share')">
+        <div class="ad-user-picker" id="share-adusers-list"><span class="badge-off">жми «обновить список» ниже</span></div>
+        <p class="modal-sub" id="share-adusers-count" style="margin:4px 0 10px;">выбрано: 0</p>
+        <div class="row" style="margin-bottom:12px;">
+          <button type="button" onclick="loadAdUsersInto('share')">[ обновить список пользователей AD ]</button>
+        </div>
+      </div>
+
+      <label for="share-hosts">разрешённые IP/подсети (через запятую, пусто = все)</label>
+      <input id="share-hosts" placeholder="192.168.1.0/24, 10.0.0.5">
+      <label for="share-veto">запретить запись файлов с расширениями (через запятую, пусто = без ограничений)</label>
+      <input id="share-veto" placeholder="exe, bat, cmd, scr, vbs, msi, ps1">
+      <div class="row" style="margin-bottom:12px;">
+        <label style="margin:0;"><input type="checkbox" id="share-recycle" style="margin:0;"> включить корзину для удалённых файлов</label>
+      </div>
+      <label for="share-retention">хранить в корзине дней (0 = навсегда, чистить только руками)</label>
+      <div class="number-input-wrap">
+        <input id="share-retention" type="number" min="0" max="9999" value="0" placeholder="0">
+        <div class="number-spinner">
+          <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('share-retention', 1)">▲</button>
+          <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('share-retention', -1)">▼</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:12px;">
+        <label style="margin:0;"><input type="checkbox" id="share-antivirus" style="margin:0;"> сканировать файлы антивирусом (ClamAV)</label>
+      </div>
+      <label for="share-quota">квота — предупреждение при превышении (ГБ, 0 = без лимита)</label>
+      <div class="number-input-wrap">
+        <input id="share-quota" type="number" min="0" step="0.1" value="0" placeholder="0">
+        <div class="number-spinner">
+          <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('share-quota', 1)">▲</button>
+          <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('share-quota', -1)">▼</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:12px;">
+        <label style="margin:0;"><input type="checkbox" id="share-backup" style="margin:0;"> включить бэкап по расписанию</label>
+      </div>
+      <div class="row" style="margin-bottom:4px;">
+        <label style="margin:0;"><input type="checkbox" id="share-full-audit" style="margin:0;"> полный аудит файловых операций (шумно!)</label>
+      </div>
+      <p class="modal-sub" style="margin:0 0 12px;">Кто открыл/удалил/переименовал файл — не только действия через панель. Пишется в syslog, требует настроенного rsyslog (делает install.sh).</p>
+      <div class="row" style="margin-bottom:12px;">
+        <label style="margin:0;"><input type="checkbox" id="share-writable" checked style="margin:0;"> разрешить запись</label>
+      </div>
+      <button onclick="createShare()">[ создать шару ]</button>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Шары</h2>
+      <input id="share-search" placeholder="фильтр по имени шары..." oninput="filterShares()" style="margin-bottom:10px;">
+      <div id="sharelist-body">
+        <p class="badge-off">загрузка...</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshShares()">[ обновить список ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Пользователи и доступ к шаре</h2>
+      <input id="user-search" placeholder="фильтр по имени пользователя..." oninput="filterUsers()" style="margin-bottom:10px;">
+      <div id="userlist-body">
+        <p class="badge-off">загрузка...</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshUsers()">[ обновить список ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-disks">
+    <div class="panel userlist">
+      <h2>Место на диске</h2>
+      <div id="diskusage-body">
+        <p class="badge-off">жми «проверить», чтобы посчитать занятое место (может занять время на больших шарах)</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshDiskUsage()">[ проверить место на диске ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Диски и здоровье</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">Только просмотр и монтирование уже размеченных дисков — форматирование панель не делает намеренно (см. README).</p>
+      <div id="diskslist-body">
+        <p class="badge-off">жми «обновить», чтобы увидеть диски</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshDisks()">[ обновить ]</button>
+      </div>
+      <div class="output-box" id="diskdetails-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>ISO-образы</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">Монтируются только для чтения — это не ограничение панели, а свойство самого формата ISO9660: после создания образа в него физически нельзя писать. Монтирование действует до перезагрузки или ручного отключения (без персистентности через <code>/etc/fstab</code>).</p>
+      <div class="row" style="align-items:flex-start;">
+        <input id="iso-search-path" placeholder="/srv" value="/srv" style="flex:1;">
+        <button type="button" onclick="findIsoFiles()">[ найти ISO ]</button>
+      </div>
+      <div id="iso-list-body" style="margin-top:8px;">
+        <p class="badge-off">жми «найти ISO», чтобы просканировать папку</p>
+      </div>
+
+      <h2 style="margin-top:20px;">Загрузить ISO</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Образы могут быть по 100+ ГБ — загрузка идёт кусками по ~10 МБ с
+        докачкой при обрыве связи (обновление страницы или потеря сети не
+        начинает всё заново). <b>Не закрывай эту вкладку браузера, пока идёт
+        загрузка</b> — она останавливается вместе с вкладкой (докачать можно
+        будет позже, с того же места).
+      </p>
+      <label for="iso-upload-dest">папка назначения</label>
+      <div class="row" style="margin-bottom:12px;">
+        <input id="iso-upload-dest" placeholder="/srv" value="/srv" style="margin-bottom:0; flex:1;">
+        <button type="button" onclick="createIsoDirectory()">[ создать папку ]</button>
+      </div>
+      <label>файл .iso</label>
+      <div class="row" style="margin-bottom:12px; align-items:center;">
+        <label for="iso-upload-file" class="file-picker-btn">[ обзор... ]</label>
+        <input id="iso-upload-file" type="file" accept=".iso" style="display:none;" onchange="onIsoFileChosen()">
+        <span id="iso-upload-filename" class="badge-off" style="overflow-wrap:anywhere;">файл не выбран</span>
+      </div>
+
+      <div id="iso-upload-progress-wrap" style="display:none; margin-top:10px;">
+        <div style="background:#060907; border:1px solid var(--fg-dim); height:22px; position:relative; overflow:hidden;">
+          <div id="iso-upload-progress-bar" style="background:var(--fg); height:100%; width:0%; transition:width 0.2s ease;"></div>
+          <span id="iso-upload-progress-text" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--fg); mix-blend-mode:difference;"></span>
+        </div>
+        <p class="modal-sub" id="iso-upload-status-line" style="margin:6px 0 0;"></p>
+        <p class="modal-sub" id="iso-upload-speed-line" style="margin:2px 0 0;"></p>
+      </div>
+
+      <div id="iso-upload-done-banner" style="display:none; margin-top:10px; padding:10px 14px; border:1px solid var(--fg); background:rgba(57,255,106,0.1);">
+        <span class="badge-on">✔ Загрузка завершена: <span id="iso-upload-done-name"></span></span>
+      </div>
+
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="startIsoUpload()" id="iso-upload-start-btn">[ начать загрузку ]</button>
+        <button onclick="cancelIsoUpload()" id="iso-upload-cancel-btn" class="danger" style="display:none;">[ отменить ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Бэкапы шар</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Ежедневно (по расписанию, ~02:30) архивируются шары с включённым
+        флагом «бэкап по расписанию» (см. вкладку «Шары и пользователи»).
+        <code>.recycle</code> и <code>.quarantine</code> в архив не входят.
+      </p>
+      <div id="backup-config-status">
+        <p class="badge-off">жми «обновить», чтобы увидеть текущие настройки</p>
+      </div>
+
+      <label for="backup-dest-input" style="margin-top:12px;">папка назначения</label>
+      <input id="backup-dest-input" placeholder="/srv/backups">
+      <label for="backup-retain-input">хранить последних архивов на шару</label>
+      <input id="backup-retain-input" type="number" min="1" value="7">
+      <label for="backup-time-input">время ежедневного запуска (±20 мин случайной задержки)</label>
+      <input id="backup-time-input" type="time" value="02:30">
+
+      <div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap;">
+        <button onclick="refreshBackupConfig()">[ обновить ]</button>
+        <button onclick="saveBackupConfig()">[ сохранить настройки ]</button>
+        <button onclick="saveBackupSchedule()">[ сохранить расписание ]</button>
+        <button onclick="runBackupNow()">[ запустить бэкап сейчас ]</button>
+      </div>
+
+      <div id="backup-shares-list" style="margin-top:12px;"></div>
+      <div class="output-box" id="backup-run-output" style="display:none; margin-top:10px;"></div>
+
+      <h2 style="margin-top:20px;">Файлы бэкапов</h2>
+      <div id="backup-files-list">
+        <p class="badge-off">жми «показать файлы», чтобы увидеть все архивы</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshBackupFiles()">[ показать файлы ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-monitor">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <div class="row" style="justify-content:space-between;">
+        <span style="font-size:12px; color:var(--fg-dim);">
+          <span class="live-dot" id="live-dot"></span>автообновление каждые 5 сек
+        </span>
+        <label style="margin:0; font-size:12px;"><input type="checkbox" id="monitor-autorefresh" checked style="margin:0 6px 0 0;" onchange="onAutoRefreshToggle()">включено</label>
+      </div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Уведомления о падении сервисов</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Если <code>smbd</code>, <code>clamav-daemon</code>, <code>nginx</code> или сама панель упадут — придёт сообщение сюда. Пустые поля = канал не используется, можно заполнить только один или оба сразу.</p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="notify-telegram-token">Telegram bot token</label>
+          <input id="notify-telegram-token" placeholder="123456789:AAExampleToken...">
+          <label for="notify-telegram-chatid">Telegram chat_id</label>
+          <input id="notify-telegram-chatid" placeholder="555111222">
+        </div>
+        <div>
+          <label for="notify-email">Email для уведомлений</label>
+          <input id="notify-email" placeholder="admin@example.com">
+          <p class="modal-sub" style="margin:0;">Почта требует настроенного ниже SMTP-релея — без него письма никуда не уйдут.</p>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px; gap:10px;">
+        <button onclick="saveNotifyConfig()">[ сохранить ]</button>
+        <button onclick="testNotifyConfig()">[ отправить тестовое уведомление ]</button>
+      </div>
+      <div class="output-box" id="notify-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Настройка отправки почты (SMTP)</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Нужно один раз указать данные твоего почтового ящика (через какой сервер уходят письма) — панель сама поставит и настроит <code>msmtp</code>. Пароль хранится в файле <code>/etc/msmtprc</code> с правами 600 (читает только root) — это требование самой программы <code>msmtp</code>, а не наша прихоть.</p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="smtp-host">SMTP-сервер (host)</label>
+          <input id="smtp-host" placeholder="smtp.yandex.ru">
+          <label for="smtp-port">порт</label>
+          <input id="smtp-port" placeholder="587" value="587">
+        </div>
+        <div>
+          <label for="smtp-from">адрес отправителя (from)</label>
+          <input id="smtp-from" placeholder="mikhail@lukomsky.ru">
+          <label for="smtp-user">логин (обычно тот же адрес)</label>
+          <input id="smtp-user" placeholder="mikhail@lukomsky.ru">
+        </div>
+      </div>
+      <label for="smtp-password" id="smtp-password-label">пароль (или пароль приложения для Gmail/Яндекса)</label>
+      <input id="smtp-password" type="password" placeholder="">
+      <div class="row" style="margin-top:4px; gap:10px; align-items:flex-start;">
+        <input id="smtp-test-email" placeholder="куда прислать тестовое письмо" style="flex:1;">
+        <button onclick="saveSmtpConfig()">[ сохранить ]</button>
+        <button onclick="testSmtpSend()">[ отправить тестовое письмо ]</button>
+      </div>
+      <div class="output-box" id="smtp-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Активные подключения</h2>
+      <div class="output-box" id="connections-output">
+        <span class="badge-off">загрузка...</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshConnections()">[ обновить сейчас ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Журнал действий</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">Кто и когда что менял через панель (по IP — отдельных админ-аккаунтов пока нет). Последние 200 записей, самые новые сверху.</p>
+      <div class="output-box" id="auditlog-output">
+        <span class="badge-off">загрузка...</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAuditLog()">[ обновить сейчас ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Аудит файловых операций</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">Кто реально открыл/изменил/удалил конкретный файл в шаре — только для шар с включённым «полным аудитом» (см. форму создания и настройки шары). Последние 200 строк.</p>
+      <div class="output-box" id="fileaudit-output">
+        <span class="badge-off">загрузка...</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshFileAuditLog()">[ обновить сейчас ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-ad">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Статус Active Directory</h2>
+      <div id="ad-status-body">
+        <p class="badge-off">загрузка...</p>
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="refreshAdStatus()">[ обновить статус ]</button>
+        <button onclick="refreshAdTest()">[ проверить соединение (testjoin/wbinfo) ]</button>
+      </div>
+      <div class="output-box" id="ad-test-output" style="display:none; margin-top:10px;"></div>
+    </div>
+
+    <div class="panel userlist" style="grid-column: 1 / -1;" id="ad-join-panel">
+      <h2>Присоединить сервер к домену</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">
+        Присоединение как member server (через <code>winbind</code>), а не контроллер домена. Текущие локальные пользователи и шары не трогаются — это второй, независимый способ входа, поверх уже работающего. Пароль администратора домена нигде не сохраняется, используется только один раз для самого присоединения.
+      </p>
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div>
+          <label for="ad-workgroup">Домен (NetBIOS/workgroup)</label>
+          <input id="ad-workgroup" placeholder="EXAMPLE">
+          <label for="ad-realm">Realm</label>
+          <input id="ad-realm" placeholder="EXAMPLE.COM">
+        </div>
+        <div>
+          <label for="ad-range-start">idmap-диапазон, от</label>
+          <input id="ad-range-start" placeholder="10000" value="10000">
+          <label for="ad-range-end">idmap-диапазон, до</label>
+          <input id="ad-range-end" placeholder="999999" value="999999">
+        </div>
+      </div>
+      <label for="ad-admin-user">Администратор домена</label>
+      <input id="ad-admin-user" placeholder="administrator">
+      <label for="ad-admin-password">Пароль администратора (не сохраняется)</label>
+      <input id="ad-admin-password" type="password" placeholder="">
+      <p class="modal-sub" style="margin:0 0 10px;">
+        Перед присоединением убедись, что DNS этого сервера указывает на DNS-сервер AD (иначе домен не найдётся), и что время на сервере синхронизировано с контроллером домена (Kerberos не работает при рассинхронизации часов больше 5 минут).
+      </p>
+      <button onclick="joinAd()">[ присоединить к домену ]</button>
+    </div>
+
+    <div class="panel userlist" id="ad-leave-panel" style="grid-column: 1 / -1; display:none;">
+      <h2>Выйти из домена</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">Убирает AD-конфигурацию из <code>smb.conf</code> и снимает компьютерную учётку сервера в AD. Локальные пользователи и шары не затрагиваются. <code>/etc/krb5.conf</code> и запись <code>winbind</code> в <code>/etc/nsswitch.conf</code> намеренно не откатываются автоматически.</p>
+      <label for="ad-leave-admin-user">Администратор домена</label>
+      <input id="ad-leave-admin-user" placeholder="administrator">
+      <label for="ad-leave-admin-password">Пароль администратора</label>
+      <input id="ad-leave-admin-password" type="password" placeholder="">
+      <button class="danger" onclick="leaveAd()">[ выйти из домена ]</button>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Пользователи AD</h2>
+      <div class="output-box" id="ad-users-output">
+        <span class="badge-off">жми «обновить», чтобы загрузить список (только после присоединения)</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdUsers()">[ обновить ]</button>
+      </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Группы AD</h2>
+      <div class="output-box" id="ad-groups-output">
+        <span class="badge-off">жми «обновить», чтобы загрузить список (только после присоединения)</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdGroups()">[ обновить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-updates">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>Обновление панели</h2>
+      <p class="modal-sub" style="margin:0 0 12px;">
+        Проверяет последний релиз на
+        <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener">GitHub</a>
+        и сравнивает с версией, которая сейчас установлена.
+      </p>
+      <div id="update-status-body">
+        <p class="badge-off">жми «проверить обновления»</p>
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="checkForUpdate()">[ проверить обновления ]</button>
+        <button onclick="refreshUpdateLog()">[ показать журнал обновления ]</button>
+      </div>
+      <div class="output-box" id="update-log-output" style="display:none; margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-admins">
+    <div class="panel userlist">
+      <h2>Администраторы панели</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        Эти учётки — только для входа в саму панель, никак не связаны с
+        Unix- или Samba-пользователями. Журнал действий теперь пишет имя,
+        под которым выполнено действие, а не только IP-адрес.
+      </p>
+      <div id="admins-list-box">
+        <p class="badge-off">жми «обновить», чтобы увидеть список</p>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="refreshAdmins()">[ обновить ]</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Добавить администратора</h2>
+      <label for="new-admin-username">имя пользователя (только a-z, 0-9, -, _)</label>
+      <input id="new-admin-username" placeholder="ivan">
+      <label for="new-admin-password">пароль (мин. 8 символов)</label>
+      <input id="new-admin-password" type="password">
+      <button onclick="createAdmin()">[ создать администратора ]</button>
+    </div>
+
+    <div class="panel">
+      <h2>Сменить свой пароль</h2>
+      <label for="change-pw-current">текущий пароль</label>
+      <input id="change-pw-current" type="password">
+      <label for="change-pw-new">новый пароль (мин. 8 символов)</label>
+      <input id="change-pw-new" type="password">
+      <button onclick="changeOwnPassword()">[ сменить пароль ]</button>
+    </div>
+  </div>
+
+  <div class="grid tab-content" id="tab-about">
+    <div class="panel userlist" style="grid-column: 1 / -1;">
+      <h2>samba-admin panel <span style="color:var(--fg-dim); font-size:12px; font-weight:normal;">v{{ panel_version }}</span></h2>
+      <p class="modal-sub" style="margin:0 0 16px; font-size:13px;">
+        Терминальная веб-панель для управления файловым сервером на Samba —
+        пользователи, шары, корзина, антивирус, квоты, бэкапы, диски и
+        ISO-образы, Active Directory, уведомления и самообновление прямо из
+        браузера, без необходимости знать синтаксис <code>smb.conf</code>.
+      </p>
+
+      <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 18px;">
+        <div>
+          <h2 style="font-size:11px;">Возможности</h2>
+          <ul style="margin:0 0 16px; padding-left:18px; font-size:13px; line-height:1.7;">
+            <li>Пользователи, шары, корзина, запрет типов файлов, IP-ограничения</li>
+            <li>Гостевой доступ без пароля, антивирус (ClamAV) на лету</li>
+            <li>Бэкапы по расписанию с восстановлением и превью</li>
+            <li>Active Directory (member server через winbind)</li>
+            <li>Диски, SMART, монтирование и загрузка ISO-образов</li>
+            <li>Уведомления о падении сервисов (Telegram/почта)</li>
+            <li>Проверка и применение обновлений прямо с GitHub-релизов</li>
+          </ul>
+        </div>
+        <div>
+          <h2 style="font-size:11px;">Философия</h2>
+          <ul style="margin:0 0 16px; padding-left:18px; font-size:13px; line-height:1.7;">
+            <li>Панель никогда не работает от root — привилегированные операции идут через один хелпер-скрипт, вызываемый через sudo</li>
+            <li>Пароли передаются через stdin, не через аргументы командной строки — не светятся в <code>ps aux</code></li>
+            <li>Панель должна жить только в локальной сети или за VPN</li>
+            <li>Разрушительные операции (форматирование дисков, восстановление из бэкапа) сознательно не в один клик</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="row" style="gap:14px; flex-wrap:wrap;">
+        <a href="https://github.com/lukomsky85/samba-admin-panel" target="_blank" rel="noopener">[ Исходники на GitHub ]</a>
+        <a href="https://github.com/lukomsky85/samba-admin-panel/releases" target="_blank" rel="noopener">[ Все релизы ]</a>
+        <a href="https://github.com/lukomsky85/samba-admin-panel/blob/main/README.md" target="_blank" rel="noopener">[ Документация ]</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel console" id="console">
+    <span class="line-ok">$ system ready. ожидание команд<span class="cursor">&nbsp;</span></span>
+  </div>
+</div>
+
+  <div class="modal-overlay" id="hosts-modal-overlay" onclick="if(event.target===this)closeHostsModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ set_share_hosts <span id="hosts-modal-sharename"></span></p>
+      <p class="modal-sub">IP-адреса или подсети, которым разрешён доступ к этой шаре. Пустой список — доступ без ограничений по IP.</p>
+      <div id="hosts-modal-list"></div>
+      <div class="modal-add-row">
+        <input id="hosts-modal-input" placeholder="192.168.1.0/24 или 10.0.0.5" onkeydown="if(event.key==='Enter'){event.preventDefault();addHostToken();}">
+        <button onclick="addHostToken()">[ + ]</button>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeHostsModal()">[ отмена ]</button>
+        <button onclick="saveHostsModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="veto-modal-overlay" onclick="if(event.target===this)closeVetoModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ set_share_veto <span id="veto-modal-sharename"></span></p>
+      <p class="modal-sub">Расширения файлов, которые нельзя будет записать в эту шару (Samba блокирует создание таких файлов на уровне протокола). Пустой список — без ограничений.</p>
+      <div id="veto-modal-list"></div>
+      <div class="modal-add-row">
+        <input id="veto-modal-input" placeholder="exe, bat, ps1..." onkeydown="if(event.key==='Enter'){event.preventDefault();addVetoToken();}">
+        <button onclick="addVetoToken()">[ + ]</button>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeVetoModal()">[ отмена ]</button>
+        <button onclick="saveVetoModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="recycle-modal-overlay" onclick="if(event.target===this)closeRecycleModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ set_share_recycle <span id="recycle-modal-sharename"></span></p>
+      <p class="modal-sub">Удалённые через шару файлы будут перемещаться в скрытую папку .recycle вместо безвозвратного удаления.</p>
+      <div class="row" style="margin-bottom:14px;">
+        <label style="margin:0;"><input type="checkbox" id="recycle-modal-enabled" style="margin:0;" onchange="document.getElementById('recycle-modal-retention-row').style.display=this.checked?'block':'none'"> включить корзину</label>
+      </div>
+      <div id="recycle-modal-retention-row">
+        <label for="recycle-modal-retention">хранить дней (0 = навсегда, чистить только руками)</label>
+        <div class="number-input-wrap">
+          <input id="recycle-modal-retention" type="number" min="0" max="9999" value="0">
+          <div class="number-spinner">
+            <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('recycle-modal-retention', 1)">▲</button>
+            <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('recycle-modal-retention', -1)">▼</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeRecycleModal()">[ отмена ]</button>
+        <button onclick="saveRecycleModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="quota-modal-overlay" onclick="if(event.target===this)closeQuotaModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ set_share_quota <span id="quota-modal-sharename"></span></p>
+      <p class="modal-sub">Квота мониторинговая — панель подсветит превышение в «Место на диске», но физически ничто не мешает записать больше (Samba не умеет ограничивать объём без реальных ФС-квот).</p>
+      <div class="row" style="margin-bottom:14px;">
+        <label style="margin:0;"><input type="checkbox" id="quota-modal-enabled" style="margin:0;" onchange="document.getElementById('quota-modal-value-row').style.display=this.checked?'block':'none'"> задать квоту</label>
+      </div>
+      <div id="quota-modal-value-row">
+        <label for="quota-modal-value">лимит, ГБ</label>
+        <div class="number-input-wrap">
+          <input id="quota-modal-value" type="number" min="0" step="0.1" value="1">
+          <div class="number-spinner">
+            <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('quota-modal-value', 1)">▲</button>
+            <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('quota-modal-value', -1)">▼</button>
+          </div>
+        </div>
+
+        <div class="row" style="margin:14px 0 4px;">
+          <label style="margin:0;"><input type="checkbox" id="quota-modal-enforced" style="margin:0;"> enforced — жёсткий лимит на уровне файловой системы</label>
+        </div>
+        <p class="modal-sub" id="quota-modal-enforced-status" style="margin:0 0 10px;">проверяю поддержку...</p>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeQuotaModal()">[ отмена ]</button>
+        <button onclick="saveQuotaModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="recyclebrowser-modal-overlay" onclick="if(event.target===this)closeRecycleBrowser()">
+    <div class="modal-box" style="width:min(560px, 92vw);">
+      <p class="modal-title">$ ls .recycle <span id="recyclebrowser-sharename"></span></p>
+      <p class="modal-sub">Восстановить конкретный файл обратно в шару. Если по тому же пути уже что-то есть — восстановленный файл получит суффикс с датой, ничего не перезапишется.</p>
+      <div id="recyclebrowser-list" class="output-box" style="max-height:320px;">
+        <span class="badge-off">загрузка...</span>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeRecycleBrowser()">[ закрыть ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="mount-modal-overlay" onclick="if(event.target===this)closeMountModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ mount <span id="mount-modal-device"></span></p>
+      <p class="modal-sub">Устройство не будет отформатировано — монтируется как есть. Если файловой системы на нём нет, mount откажет с понятной ошибкой.</p>
+      <label for="mount-modal-path">точка монтирования</label>
+      <input id="mount-modal-path" placeholder="/mnt/backup">
+      <div class="row" style="margin: 4px 0 14px;">
+        <label style="margin:0;"><input type="checkbox" id="mount-modal-persistent" style="margin:0;"> подключать автоматически при загрузке (запись в /etc/fstab по UUID)</label>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeMountModal()">[ отмена ]</button>
+        <button onclick="saveMountModal()">[ примонтировать ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="dirbrowser-modal-overlay" onclick="if(event.target===this)closeDirBrowser()">
+    <div class="modal-box" style="width:min(520px, 92vw);">
+      <p class="modal-title">$ ls <span id="dirbrowser-breadcrumb">/srv</span></p>
+      <p class="modal-sub">Двойной клик — зайти в папку. Шара будет создана как <b>выбранная папка / имя шары</b> — саму папку с именем шары создавать не нужно, панель сделает это сама.</p>
+      <div id="dirbrowser-list" class="output-box" style="max-height:280px;">
+        <span class="badge-off">загрузка...</span>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeDirBrowser()">[ отмена ]</button>
+        <button onclick="selectDirBrowserPath()">[ выбрать эту папку ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="group-modal-overlay" onclick="if(event.target===this)closeGroupModal()">
+    <div class="modal-box" style="width:min(480px, 92vw);">
+      <p class="modal-title">$ set_share_group <span id="group-modal-sharename"></span></p>
+      <p class="modal-sub">Можно переключить между обычной локальной группой и доступом через Active Directory в любой момент, не пересоздавая шару.</p>
+
+      <label for="group-modal-access-type">тип доступа</label>
+      <select id="group-modal-access-type" onchange="onAccessTypeChange('group-modal')">
+        <option value="local">Локальная Unix-группа</option>
+        <option value="ad_group">Группа Active Directory</option>
+        <option value="ad_users">Конкретные пользователи AD</option>
+        <option value="guest">Гостевой доступ (без пароля)</option>
+      </select>
+
+      <div id="group-modal-access-guest-block" style="display:none;">
+        <p class="modal-sub" style="margin:0 0 12px; color:var(--red);">
+          ⚠ Подключиться сможет кто угодно в сети без логина и пароля (ограничить можно только по IP/подсети шары). Папка станет доступна на запись всем локальным процессам на сервере, не только через Samba. Не используй для чувствительных данных.
+        </p>
+      </div>
+
+      <div id="group-modal-access-local-block">
+        <label for="group-modal-group">имя группы</label>
+        <input id="group-modal-group" placeholder="sharegroup">
+      </div>
+
+      <div id="group-modal-access-adgroup-block" style="display:none;">
+        <label for="group-modal-adgroup-select">группа AD</label>
+        <select id="group-modal-adgroup-select"><option value="">жми «обновить список» ниже</option></select>
+        <div class="row" style="margin:4px 0 12px;">
+          <button type="button" onclick="loadAdGroupsInto('group-modal-adgroup-select')">[ обновить список групп AD ]</button>
+        </div>
+      </div>
+
+      <div id="group-modal-access-adusers-block" style="display:none;">
+        <label for="group-modal-adusers-filter">пользователи AD</label>
+        <input id="group-modal-adusers-filter" placeholder="фильтр по имени..." oninput="filterAdUserPicker('group-modal')">
+        <div class="ad-user-picker" id="group-modal-adusers-list"><span class="badge-off">жми «обновить список» ниже</span></div>
+        <p class="modal-sub" id="group-modal-adusers-count" style="margin:4px 0 10px;">выбрано: 0</p>
+        <div class="row" style="margin-bottom:12px;">
+          <button type="button" onclick="loadAdUsersInto('group-modal')">[ обновить список пользователей AD ]</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button onclick="closeGroupModal()">[ отмена ]</button>
+        <button onclick="saveGroupModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// CSRF-токен — один на всю сессию страницы, вставляется сервером при
+// рендеринге. Добавляется заголовком X-CSRFToken во все POST-запросы
+// (см. post() ниже и несколько прямых fetch(), которые её не используют).
+const CSRF_TOKEN = "{{ csrf_token() }}";
+
+// --- Фоновая анимация "цифровой дождь" в цвете текущей темы ---
+// ~10 кадров/сек и пауза на скрытой вкладке (тот же паттерн, что и у
+// авто-обновления на вкладке "Мониторинг") — панель обычно открыта часами,
+// не было смысла грузить CPU/GPU ради фоновой красоты, которую никто не
+// смотрит, пока вкладка свёрнута или на заднем плане.
+// Намеренно НЕ проверяем prefers-reduced-motion — это личная админ-панель,
+// а не публичный продукт, и раньше эта проверка тихо отключала эффект тем,
+// кто явно его хотел (диагностировано через реальную проверку в консоли
+// браузера: matchMedia(...).matches оказался true у системы админа).
+(function initMatrixBackground() {
+  const canvas = document.getElementById('matrix-bg');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  const FONT_SIZE = 20;
+  const CHARS = 'アイウエオカキクケコサシスセソタチツテト0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let columns = 0;
+  let drops = [];
+  let matrixTimer = null;
+
+  function hexToRgba(hex, alpha) {
+    hex = hex.trim().replace('#', '');
+    if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function getThemeColors() {
+    const styles = getComputedStyle(document.documentElement);
+    return {
+      fg: (styles.getPropertyValue('--fg') || '#39ff6a').trim(),
+      bg: (styles.getPropertyValue('--bg') || '#0b0f0d').trim(),
+    };
+  }
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    columns = Math.floor(canvas.width / FONT_SIZE);
+    drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+  }
+
+  function draw() {
+    const { fg, bg } = getThemeColors();
+    // полупрозрачная заливка фоном ТЕКУЩЕЙ темы поверх предыдущего кадра —
+    // создаёт эффект следа/затухания символов, а не просто мигание
+    ctx.fillStyle = hexToRgba(bg, 0.08);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = fg;
+    ctx.font = FONT_SIZE + 'px monospace';
+
+    for (let i = 0; i < drops.length; i++) {
+      const char = CHARS[Math.floor(Math.random() * CHARS.length)];
+      ctx.fillText(char, i * FONT_SIZE, drops[i] * FONT_SIZE);
+
+      if (drops[i] * FONT_SIZE > canvas.height && Math.random() > 0.975) {
+        drops[i] = 0;
+      }
+      drops[i]++;
+    }
+  }
+
+  function startMatrixTimer() {
+    if (matrixTimer) return;
+    matrixTimer = setInterval(draw, 100);
+  }
+
+  function stopMatrixTimer() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer);
+    matrixTimer = null;
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopMatrixTimer();
+    else startMatrixTimer();
+  });
+  startMatrixTimer();
+})();
+
+const consoleEl = document.getElementById('console');
+
+function logLine(text, cls) {
+  const span = document.createElement('div');
+  span.className = cls || 'line-ok';
+  span.textContent = text;
+  consoleEl.appendChild(span);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function stepNumberInput(id, direction) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const step = parseFloat(input.step) || 1;
+  const min = input.min !== '' && input.min !== undefined ? parseFloat(input.min) : -Infinity;
+  const max = input.max !== '' && input.max !== undefined ? parseFloat(input.max) : Infinity;
+  let value = parseFloat(input.value);
+  if (isNaN(value)) value = 0;
+  value += direction * step;
+  value = Math.min(max, Math.max(min, value));
+  // округляем до того же числа знаков после запятой, что и у step (0.1 ->
+  // 1 знак) — иначе из-за особенностей чисел с плавающей точкой можно
+  // получить что-то вроде 0.30000000000000004 в поле.
+  const stepStr = step.toString();
+  const decimals = stepStr.includes('.') ? stepStr.split('.')[1].length : 0;
+  input.value = value.toFixed(decimals);
+  input.dispatchEvent(new Event('input', {bubbles: true}));
+  input.dispatchEvent(new Event('change', {bubbles: true}));
+}
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+function renderOutput(prefix, data) {
+  logLine('$ ' + prefix, 'line-cmd');
+  const lines = (data.output || '').split('\n').filter(Boolean);
+  lines.forEach(l => logLine(l, l.startsWith('ERROR') ? 'line-err' : 'line-ok'));
+}
+
+async function createUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  if (!username || !password) { logLine('ERROR: заполни оба поля', 'line-err'); return; }
+  const data = await post('/api/create_user', {username, password});
+  renderOutput('create_user ' + username, data);
+  if (data.ok) {
+    document.getElementById('new-username').value = '';
+    document.getElementById('new-password').value = '';
+    refreshUsers();
+  }
+}
+
+async function setPassword() {
+  const username = document.getElementById('pw-username').value.trim();
+  const password = document.getElementById('pw-password').value;
+  if (!username || !password) { logLine('ERROR: заполни оба поля', 'line-err'); return; }
+  const data = await post('/api/set_password', {username, password});
+  renderOutput('set_samba_password ' + username, data);
+  if (data.ok) document.getElementById('pw-password').value = '';
+}
+
+async function toggleAccess(username, action) {
+  const data = await post('/api/toggle_access', {username, action});
+  renderOutput('toggle_share_access ' + username + ' ' + action, data);
+  refreshUsers();
+}
+
+async function removeUser(username) {
+  if (!confirm('Удалить пользователя ' + username + ' полностью из системы?')) return;
+  const data = await post('/api/remove_user', {username});
+  renderOutput('remove_user ' + username, data);
+  refreshUsers();
+}
+
+function onShareNameInput() {
+  const pathInput = document.getElementById('share-path');
+  if (pathInput.dataset.manual === '1') return; // юзер уже сам вписал путь — не перезаписываем
+  const name = document.getElementById('share-name').value.trim();
+  pathInput.value = name ? '/srv/' + name : '';
+}
+
+function onSharePathManualEdit() {
+  document.getElementById('share-path').dataset.manual = '1';
+}
+
+let dirBrowserState = { path: '/srv' };
+
+function openDirBrowser() {
+  document.getElementById('dirbrowser-modal-overlay').style.display = 'flex';
+  loadDirBrowser('/srv');
+}
+
+function closeDirBrowser() {
+  document.getElementById('dirbrowser-modal-overlay').style.display = 'none';
+}
+
+async function loadDirBrowser(path) {
+  const list = document.getElementById('dirbrowser-list');
+  list.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/list_directories', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+    body: JSON.stringify({path})
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    if (path !== '/') { loadDirBrowser('/'); return; }
+    list.innerHTML = `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`;
+    return;
+  }
+  dirBrowserState.path = path;
+  document.getElementById('dirbrowser-breadcrumb').textContent = path;
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('DIR|'));
+  list.innerHTML = '';
+
+  if (path !== '/') {
+    const up = document.createElement('div');
+    up.className = 'hosts-row row-in';
+    up.style.cursor = 'pointer';
+    up.innerHTML = '<span class="badge-off">.. (уровень выше)</span>';
+    up.ondblclick = () => {
+      const parent = path.replace(/\/[^/]+$/, '') || '/';
+      loadDirBrowser(parent);
+    };
+    list.appendChild(up);
+  }
+
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 2) return;
+    let name;
+    try { name = b64DecodeUtf8(parts[1]); } catch (e) { return; }
+    const row = document.createElement('div');
+    row.className = 'hosts-row row-in';
+    row.style.cursor = 'pointer';
+    row.innerHTML = `<span class="badge-on">${escapeHtml(name)}/</span>`;
+    row.ondblclick = () => {
+      const next = path === '/' ? '/' + name : path + '/' + name;
+      loadDirBrowser(next);
+    };
+    list.appendChild(row);
+  });
+
+  if (lines.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'badge-off';
+    empty.style.margin = '8px 0 0';
+    empty.textContent = '(подпапок нет)';
+    list.appendChild(empty);
+  }
+}
+
+function selectDirBrowserPath() {
+  const shareName = document.getElementById('share-name').value.trim();
+  const base = dirBrowserState.path === '/' ? '' : dirBrowserState.path;
+  const finalPath = shareName ? (base + '/' + shareName) : (base || '/');
+  const pathInput = document.getElementById('share-path');
+  pathInput.value = finalPath;
+  pathInput.dataset.manual = '1';
+  closeDirBrowser();
+}
+
+async function createShare() {
+  const name = document.getElementById('share-name').value.trim();
+  const path = document.getElementById('share-path').value.trim();
+  const group = computeGroupValue('share');
+  const hosts = document.getElementById('share-hosts').value.trim() || 'ALL';
+  const veto = document.getElementById('share-veto').value.trim() || 'NONE';
+  const recycle = document.getElementById('share-recycle').checked;
+  const retention_days = parseInt(document.getElementById('share-retention').value, 10) || 0;
+  const antivirus = document.getElementById('share-antivirus').checked;
+  const quota_bytes = Math.round((parseFloat(document.getElementById('share-quota').value) || 0) * 1024 ** 3);
+  const backup = document.getElementById('share-backup').checked;
+  const full_audit = document.getElementById('share-full-audit').checked;
+  const writable = document.getElementById('share-writable').checked;
+  if (!name || !path) { logLine('ERROR: укажи имя шары и путь', 'line-err'); return; }
+  if (!group) { logLine('ERROR: укажи группу/AD-группу/AD-пользователей для доступа', 'line-err'); return; }
+  const data = await post('/api/create_share', {name, path, group, writable, hosts, veto, recycle, retention_days, antivirus, quota_bytes, backup, full_audit});
+  renderOutput('create_share ' + name + ' ' + path, data);
+  if (data.ok) {
+    document.getElementById('share-name').value = '';
+    document.getElementById('share-path').value = '';
+    document.getElementById('share-path').dataset.manual = '';
+    document.getElementById('share-hosts').value = '';
+    document.getElementById('share-veto').value = '';
+    document.getElementById('share-recycle').checked = false;
+    document.getElementById('share-retention').value = '0';
+    document.getElementById('share-antivirus').checked = false;
+    document.getElementById('share-quota').value = '0';
+    document.getElementById('share-backup').checked = false;
+    document.getElementById('share-full-audit').checked = false;
+    document.getElementById('share-access-type').value = 'local';
+    adUserSelections['share'] = new Set();
+    onAccessTypeChange('share');
+    refreshShares();
+  }
+}
+
+async function toggleWritable(name, writable) {
+  const data = await post('/api/set_share_writable', {name, writable});
+  renderOutput('set_share_writable ' + name + ' ' + writable, data);
+  refreshShares();
+}
+
+let hostsModalState = { name: null, tokens: [] };
+
+function editHosts(name, currentHosts) {
+  hostsModalState.name = name;
+  hostsModalState.tokens = (!currentHosts || currentHosts === 'ALL')
+    ? []
+    : currentHosts.split(',').map(t => t.trim()).filter(Boolean);
+  document.getElementById('hosts-modal-sharename').textContent = name;
+  document.getElementById('hosts-modal-input').value = '';
+  renderHostsModalList();
+  document.getElementById('hosts-modal-overlay').style.display = 'flex';
+  document.getElementById('hosts-modal-input').focus();
+}
+
+function renderHostsModalList() {
+  const list = document.getElementById('hosts-modal-list');
+  if (hostsModalState.tokens.length === 0) {
+    list.innerHTML = '<p class="badge-off" style="padding:4px 0;">без ограничений — доступ разрешён всем</p>';
+    return;
+  }
+  list.innerHTML = '';
+  hostsModalState.tokens.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'hosts-row';
+    row.innerHTML = `<span class="badge-on">${t}</span><button class="danger" onclick="removeHostToken(${i})">[ − ]</button>`;
+    list.appendChild(row);
+  });
+}
+
+function addHostToken() {
+  const input = document.getElementById('hosts-modal-input');
+  const val = input.value.trim();
+  if (!val) return;
+  if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(val)) {
+    logLine('ERROR: "' + val + '" не похож на IP или подсеть (пример: 192.168.1.0/24)', 'line-err');
+    return;
+  }
+  if (hostsModalState.tokens.includes(val)) { input.value = ''; return; }
+  hostsModalState.tokens.push(val);
+  input.value = '';
+  renderHostsModalList();
+}
+
+function removeHostToken(i) {
+  hostsModalState.tokens.splice(i, 1);
+  renderHostsModalList();
+}
+
+function closeHostsModal() {
+  document.getElementById('hosts-modal-overlay').style.display = 'none';
+}
+
+async function saveHostsModal() {
+  const name = hostsModalState.name;
+  const hosts = hostsModalState.tokens.length ? hostsModalState.tokens.join(',') : 'ALL';
+  const data = await post('/api/set_share_hosts', {name, hosts});
+  renderOutput('set_share_hosts ' + name + ' ' + hosts, data);
+  closeHostsModal();
+  refreshShares();
+}
+
+let vetoModalState = { name: null, tokens: [] };
+
+function editVeto(name, currentVeto) {
+  vetoModalState.name = name;
+  vetoModalState.tokens = (!currentVeto || currentVeto === 'NONE')
+    ? []
+    : currentVeto.split(',').map(t => t.trim()).filter(Boolean);
+  document.getElementById('veto-modal-sharename').textContent = name;
+  document.getElementById('veto-modal-input').value = '';
+  renderVetoModalList();
+  document.getElementById('veto-modal-overlay').style.display = 'flex';
+  document.getElementById('veto-modal-input').focus();
+}
+
+function renderVetoModalList() {
+  const list = document.getElementById('veto-modal-list');
+  if (vetoModalState.tokens.length === 0) {
+    list.innerHTML = '<p class="badge-off" style="padding:4px 0;">без ограничений — любые файлы разрешены</p>';
+    return;
+  }
+  list.innerHTML = '';
+  vetoModalState.tokens.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'hosts-row';
+    row.innerHTML = `<span class="badge-on">*.${t}</span><button class="danger" onclick="removeVetoToken(${i})">[ − ]</button>`;
+    list.appendChild(row);
+  });
+}
+
+function addVetoToken() {
+  const input = document.getElementById('veto-modal-input');
+  let val = input.value.trim().replace(/^\*?\./, '');
+  if (!val) return;
+  if (!/^[a-zA-Z0-9]{1,10}$/.test(val)) {
+    logLine('ERROR: "' + val + '" не похоже на расширение файла (пример: exe, bat, ps1)', 'line-err');
+    return;
+  }
+  val = val.toLowerCase();
+  if (vetoModalState.tokens.includes(val)) { input.value = ''; return; }
+  vetoModalState.tokens.push(val);
+  input.value = '';
+  renderVetoModalList();
+}
+
+function removeVetoToken(i) {
+  vetoModalState.tokens.splice(i, 1);
+  renderVetoModalList();
+}
+
+function closeVetoModal() {
+  document.getElementById('veto-modal-overlay').style.display = 'none';
+}
+
+async function saveVetoModal() {
+  const name = vetoModalState.name;
+  const veto = vetoModalState.tokens.length ? vetoModalState.tokens.join(',') : 'NONE';
+  const data = await post('/api/set_share_veto', {name, veto});
+  renderOutput('set_share_veto ' + name + ' ' + veto, data);
+  closeVetoModal();
+  refreshShares();
+}
+
+let recycleModalState = { name: null };
+
+function editRecycle(name, recycleOn, retentionDays) {
+  recycleModalState.name = name;
+  document.getElementById('recycle-modal-sharename').textContent = name;
+  document.getElementById('recycle-modal-enabled').checked = recycleOn;
+  document.getElementById('recycle-modal-retention').value = retentionDays || 0;
+  document.getElementById('recycle-modal-retention-row').style.display = recycleOn ? 'block' : 'none';
+  document.getElementById('recycle-modal-overlay').style.display = 'flex';
+}
+
+function closeRecycleModal() {
+  document.getElementById('recycle-modal-overlay').style.display = 'none';
+}
+
+async function saveRecycleModal() {
+  const name = recycleModalState.name;
+  const recycle = document.getElementById('recycle-modal-enabled').checked;
+  const retention_days = parseInt(document.getElementById('recycle-modal-retention').value, 10) || 0;
+  const data = await post('/api/set_share_recycle', {name, recycle, retention_days});
+  renderOutput('set_share_recycle ' + name + ' ' + recycle + ' ' + retention_days, data);
+  closeRecycleModal();
+  refreshShares();
+}
+
+let quotaModalState = { name: null, currentEnforced: false };
+
+async function editQuota(name, quotaBytes, currentEnforced) {
+  quotaModalState.name = name;
+  quotaModalState.currentEnforced = !!currentEnforced;
+  const gb = quotaBytes > 0 ? (quotaBytes / (1024 ** 3)) : 1;
+  document.getElementById('quota-modal-sharename').textContent = name;
+  document.getElementById('quota-modal-enabled').checked = quotaBytes > 0;
+  document.getElementById('quota-modal-value').value = gb.toFixed(2);
+  document.getElementById('quota-modal-value-row').style.display = quotaBytes > 0 ? 'block' : 'none';
+  document.getElementById('quota-modal-enforced').checked = !!currentEnforced;
+  document.getElementById('quota-modal-overlay').style.display = 'flex';
+
+  const statusEl = document.getElementById('quota-modal-enforced-status');
+  const enforcedCheckbox = document.getElementById('quota-modal-enforced');
+  statusEl.textContent = 'проверяю поддержку enforced-режима...';
+  enforcedCheckbox.disabled = true;
+
+  try {
+    const res = await fetch('/api/check_quota_backend', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({name})
+    });
+    const data = await res.json();
+    const parts = (data.output || '').split('|');
+    // QUOTABACKEND|<status>|<причина_или_фс>|<точка_монтирования>
+    if (data.ok && parts[0] === 'QUOTABACKEND' && parts[1] === 'xfs_prjquota') {
+      statusEl.innerHTML = `<span class="badge-on">✔ доступно (XFS, точка монтирования ${escapeHtml(parts[3] || '?')})</span>`;
+      enforcedCheckbox.disabled = false;
+    } else {
+      const reason = parts[2] || data.output || 'причина неизвестна';
+      statusEl.innerHTML = `<span class="badge-off">✘ недоступно — ${escapeHtml(reason)}. Мониторинговая квота продолжит работать как обычно.</span>`;
+      enforcedCheckbox.checked = false;
+      enforcedCheckbox.disabled = true;
+    }
+  } catch (e) {
+    statusEl.textContent = 'не удалось проверить поддержку — enforced-режим временно недоступен';
+    enforcedCheckbox.disabled = true;
+  }
+}
+
+function closeQuotaModal() {
+  document.getElementById('quota-modal-overlay').style.display = 'none';
+}
+
+async function saveQuotaModal() {
+  const name = quotaModalState.name;
+  const enabled = document.getElementById('quota-modal-enabled').checked;
+  const gb = parseFloat(document.getElementById('quota-modal-value').value) || 0;
+  const quota_bytes = enabled ? Math.round(gb * 1024 ** 3) : 0;
+  const newEnforced = enabled && document.getElementById('quota-modal-enforced').checked;
+
+  const data = await post('/api/set_share_quota', {name, quota_bytes});
+  renderOutput('set_share_quota ' + name + ' ' + quota_bytes, data);
+
+  // enforced-режим меняем ОТДЕЛЬНЫМ вызовом, только если состояние реально
+  // изменилось — не дёргаем xfs_quota лишний раз, если чекбокс не трогали
+  if (data.ok && newEnforced !== quotaModalState.currentEnforced) {
+    const enfData = await post('/api/set_enforced_quota', {name, enabled: newEnforced});
+    renderOutput('set_enforced_quota ' + name + ' ' + newEnforced, enfData);
+  }
+
+  closeQuotaModal();
+  refreshShares();
+}
+
+async function toggleBackup(name, backup) {
+  const data = await post('/api/set_share_backup', {name, backup});
+  renderOutput('set_share_backup ' + name + ' ' + backup, data);
+  refreshShares();
+}
+
+async function toggleFullAudit(name, full_audit) {
+  const data = await post('/api/set_share_full_audit', {name, full_audit});
+  renderOutput('set_share_full_audit ' + name + ' ' + full_audit, data);
+  refreshShares();
+}
+
+async function emptyRecycleBin(name, fileCount) {
+  if (!confirm('Безвозвратно удалить ' + fileCount + ' файл(ов) из корзины шары "' + name + '"? Это НЕЛЬЗЯ отменить.')) return;
+  const data = await post('/api/empty_recycle_bin', {name});
+  renderOutput('empty_recycle_bin ' + name, data);
+  refreshShares();
+}
+
+let recycleBrowserState = { name: null };
+
+function openRecycleBrowser(name) {
+  recycleBrowserState.name = name;
+  document.getElementById('recyclebrowser-sharename').textContent = name;
+  document.getElementById('recyclebrowser-modal-overlay').style.display = 'flex';
+  loadRecycleBrowser();
+}
+
+function closeRecycleBrowser() {
+  document.getElementById('recyclebrowser-modal-overlay').style.display = 'none';
+}
+
+function fmtBytesShort(n) {
+  n = parseInt(n, 10) || 0;
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function b64DecodeUtf8(b64) {
+  // atob() сам по себе даёт "байтовую" строку (каждый JS-символ = 1 байт),
+  // а не UTF-8 текст — кириллица и любые многобайтовые символы превращаются
+  // в кракозябры, если использовать её результат напрямую. Прогоняем байты
+  // через TextDecoder, чтобы получить настоящую Unicode-строку.
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+async function loadRecycleBrowser() {
+  const name = recycleBrowserState.name;
+  const list = document.getElementById('recyclebrowser-list');
+  list.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/list_recycle_bin', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+    body: JSON.stringify({name})
+  });
+  const data = await res.json();
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('RECYCLEFILE|'));
+  if (lines.length === 0) {
+    list.innerHTML = '<span class="badge-off">корзина пуста</span>';
+    return;
+  }
+  list.innerHTML = '';
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 4) return;
+    const [, relpathB64, size, mtime] = parts;
+    let relpath;
+    try { relpath = b64DecodeUtf8(relpathB64); } catch (e) { relpath = '(не удалось прочитать имя)'; }
+    const dateStr = mtime > 0 ? new Date(parseInt(mtime, 10) * 1000).toLocaleString('ru-RU') : '';
+    const row = document.createElement('div');
+    row.className = 'hosts-row';
+    row.innerHTML = `
+      <span class="badge-on" style="overflow-wrap:anywhere;">${escapeHtml(relpath)} <span style="color:var(--fg-dim); font-size:11px;">(${fmtBytesShort(size)}, ${dateStr})</span></span>
+      <button onclick="restoreRecycleFile('${relpathB64}')">[ восстановить ]</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+async function restoreRecycleFile(relpathB64) {
+  const name = recycleBrowserState.name;
+  const data = await post('/api/restore_recycle_file', {name, relpath_b64: relpathB64});
+  renderOutput('restore_recycle_file ' + name, data);
+  if (data.ok) {
+    loadRecycleBrowser();
+    refreshShares();
+  }
+}
+
+async function toggleAntivirus(name, antivirus) {
+  const data = await post('/api/set_share_antivirus', {name, antivirus});
+  renderOutput('set_share_antivirus ' + name + ' ' + antivirus, data);
+  refreshShares();
+}
+
+async function emptyQuarantine(name, fileCount) {
+  if (!confirm('Безвозвратно удалить ' + fileCount + ' заражённых файл(ов) из карантина шары "' + name + '"? Это НЕЛЬЗЯ отменить.')) return;
+  const data = await post('/api/empty_quarantine', {name});
+  renderOutput('empty_quarantine ' + name, data);
+  refreshShares();
+}
+
+async function removeShare(name) {
+  if (!confirm('Убрать шару "' + name + '" из Samba? Файлы на диске останутся.')) return;
+  const data = await post('/api/remove_share', {name});
+  renderOutput('remove_share ' + name, data);
+  refreshShares();
+}
+
+async function refreshShares() {
+  const res = await fetch('/api/list_shares');
+  const data = await res.json();
+  const body = document.getElementById('sharelist-body');
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('SHARE|'));
+  if (lines.length === 0) {
+    body.innerHTML = '<p class="badge-off">шар пока нет</p>';
+    document.getElementById('summary-shares').textContent = '0';
+    document.getElementById('summary-recycle').textContent = '0';
+    document.getElementById('summary-quarantine').textContent = '0';
+    return;
+  }
+  body.innerHTML = '';
+  const fmtGB = (bytes) => (parseInt(bytes, 10) / (1024 ** 3)).toFixed(bytes < 1024 ** 3 ? 2 : 1);
+  let totalRecycle = 0, totalQuarantine = 0;
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 18) return;
+    const [, name, path, group, writable, hosts, veto, recycle, retention, recycleCount, antivirus, quarantineCount, quotaBytes, backupEnabled, lastBackup, fullAudit, status, enforcedQuota] = parts;
+    const isWritable = writable === 'yes';
+    const restrictedIp = hosts !== 'ALL';
+    const restrictedVeto = veto !== 'NONE';
+    const recycleOn = recycle === 'yes';
+    const avOn = antivirus === 'yes';
+    const count = parseInt(recycleCount, 10) || 0;
+    const qCount = parseInt(quarantineCount, 10) || 0;
+    totalRecycle += count;
+    totalQuarantine += qCount;
+    const quota = parseInt(quotaBytes, 10) || 0;
+    const enforcedOn = enforcedQuota === 'yes';
+    const backupOn = backupEnabled === 'yes';
+    const lastBackupTs = parseInt(lastBackup, 10) || 0;
+    const auditOn = fullAudit === 'yes';
+    let recycleLabel = '';
+    if (recycleOn) {
+      recycleLabel = ' · корзина: ' + count + ' файл(ов)' + (retention !== '0' ? ' (авточистка ' + retention + 'д)' : ' (навсегда)');
+    }
+    const avLabel = avOn ? ' · антивирус: вкл' + (qCount > 0 ? ` (в карантине: ${qCount})` : '') : '';
+    const quotaLabel = quota > 0 ? ' · квота: ' + fmtGB(quota) + ' ГБ' + (enforcedOn ? ' ⛓ enforced' : '') : '';
+    let backupLabel = '';
+    if (backupOn) {
+      backupLabel = lastBackupTs > 0
+        ? ' · бэкап: ' + new Date(lastBackupTs * 1000).toLocaleString('ru-RU')
+        : ' · бэкап: включён, ещё не запускался';
+    }
+    const auditLabel = auditOn ? ' · полный аудит: вкл' : '';
+    let groupLabel;
+    if (group === 'GUEST') {
+      groupLabel = '⚠ ГОСТЕВОЙ ДОСТУП (без пароля)';
+    } else if (group.startsWith('AD:')) {
+      groupLabel = 'AD-группа: ' + group.slice(3);
+    } else if (group.startsWith('ADUSERS:')) {
+      groupLabel = 'AD-пользователи: ' + group.slice(8).split(',').join(', ');
+    } else {
+      groupLabel = group;
+    }
+    const groupB64 = btoa(unescape(encodeURIComponent(group)));
+    const div = document.createElement('div');
+    div.className = 'userline row-in';
+    div.dataset.filterName = name.toLowerCase();
+    div.innerHTML = `
+      <span class="${status.includes('ПАПКА') ? 'badge-off' : 'badge-on'}">
+        ● ${name} <span style="color:var(--fg-dim)">${path} · ${escapeHtml(groupLabel)} · ${status}${restrictedIp ? ' · доступ: ' + hosts : ''}${restrictedVeto ? ' · запрещены: ' + veto : ''}${recycleLabel}${avLabel}${quotaLabel}${backupLabel}${auditLabel}</span>
+      </span>
+      <span class="actions">
+        <button onclick="toggleWritable('${name}', ${!isWritable})">${isWritable ? 'read-only' : 'разрешить запись'}</button>
+        <button onclick="openGroupModal('${name}', '${groupB64}')">изменить группу доступа</button>
+        <button onclick="editHosts('${name}', '${hosts}')">${restrictedIp ? 'изменить IP' : 'ограничить по IP'}</button>
+        <button onclick="editVeto('${name}', '${veto}')">${restrictedVeto ? 'изменить типы файлов' : 'запретить типы файлов'}</button>
+        <button onclick="editRecycle('${name}', ${recycleOn}, ${retention})">${recycleOn ? 'настройки корзины' : 'включить корзину'}</button>
+        ${recycleOn && count > 0 ? `<button onclick="openRecycleBrowser('${name}')">открыть корзину (${count})</button>` : ''}
+        ${recycleOn && count > 0 ? `<button class="danger" onclick="emptyRecycleBin('${name}', ${count})">очистить корзину (${count})</button>` : ''}
+        <button onclick="toggleAntivirus('${name}', ${!avOn})">${avOn ? 'выключить антивирус' : 'включить антивирус'}</button>
+        ${avOn && qCount > 0 ? `<button class="danger" onclick="emptyQuarantine('${name}', ${qCount})">очистить карантин (${qCount})</button>` : ''}
+        <button onclick="editQuota('${name}', ${quota}, ${enforcedOn})">${quota > 0 ? 'изменить квоту' : 'задать квоту'}</button>
+        <button onclick="toggleBackup('${name}', ${!backupOn})">${backupOn ? 'выключить бэкап' : 'включить бэкап'}</button>
+        <button onclick="toggleFullAudit('${name}', ${!auditOn})">${auditOn ? 'выключить полный аудит' : 'включить полный аудит'}</button>
+        <button class="danger" onclick="removeShare('${name}')">убрать шару</button>
+      </span>`;
+    body.appendChild(div);
+  });
+  document.getElementById('summary-shares').textContent = lines.length;
+  document.getElementById('summary-recycle').textContent = totalRecycle;
+  document.getElementById('summary-quarantine').textContent = totalQuarantine;
+  filterShares();
+}
+
+async function refreshUsers() {
+  const res = await fetch('/api/list_users');
+  const data = await res.json();
+  const body = document.getElementById('userlist-body');
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.includes('|'));
+  if (lines.length === 0) {
+    body.innerHTML = '<p class="badge-off">пользователей не найдено</p>';
+    document.getElementById('summary-users').textContent = '0/0';
+    return;
+  }
+  body.innerHTML = '';
+  let activeCount = 0;
+  lines.forEach(line => {
+    const [status, username] = line.split('|');
+    if (!username) return;
+    const on = status === 'on';
+    if (on) activeCount++;
+    const div = document.createElement('div');
+    div.className = 'userline row-in';
+    div.dataset.filterName = username.toLowerCase();
+    div.innerHTML = `
+      <span class="${on ? 'badge-on' : 'badge-off'}">${on ? '●' : '○'} ${username}</span>
+      <span class="actions">
+        <button onclick="toggleAccess('${username}', '${on ? 'off' : 'on'}')">${on ? 'отключить шару' : 'включить шару'}</button>
+        <button class="danger" onclick="removeUser('${username}')">удалить</button>
+      </span>`;
+    body.appendChild(div);
+  });
+  document.getElementById('summary-users').textContent = activeCount + '/' + lines.length;
+  filterUsers();
+}
+
+function filterShares() {
+  const q = document.getElementById('share-search').value.trim().toLowerCase();
+  document.querySelectorAll('#sharelist-body > .userline').forEach(row => {
+    const name = row.dataset.filterName || '';
+    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+}
+
+function filterUsers() {
+  const q = document.getElementById('user-search').value.trim().toLowerCase();
+  document.querySelectorAll('#userlist-body > .userline').forEach(row => {
+    const name = row.dataset.filterName || '';
+    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function smoothBoxUpdate(box, html) {
+  // Не дёргаем контент на пустое место и обратно при каждом автообновлении —
+  // сохраняем позицию скролла (или следуем за низом, если юзер и так там
+  // читал последние строки, как в `tail -f`), и просто мягко подсвечиваем
+  // рамку на полсекунды как визуальный сигнал "тут что-то обновилось".
+  const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  const prevScroll = box.scrollTop;
+  box.innerHTML = html;
+  box.scrollTop = wasAtBottom ? box.scrollHeight : prevScroll;
+  box.classList.remove('just-updated');
+  void box.offsetWidth; // форсируем reflow, чтобы анимация/transition отыграла заново
+  box.classList.add('just-updated');
+  setTimeout(() => box.classList.remove('just-updated'), 500);
+}
+
+async function loadNotifyConfig() {
+  try {
+    const res = await fetch('/api/get_notify_config');
+    const data = await res.json();
+    const line = (data.output || '').split('\n').find(l => l.trim().startsWith('NOTIFYCONF|'));
+    if (!line) return;
+    const parts = line.trim().split('|');
+    if (parts.length < 4) return;
+    const [, tokenB64, chatidB64, emailB64] = parts;
+    document.getElementById('notify-telegram-token').value = tokenB64 ? b64DecodeUtf8(tokenB64) : '';
+    document.getElementById('notify-telegram-chatid').value = chatidB64 ? b64DecodeUtf8(chatidB64) : '';
+    document.getElementById('notify-email').value = emailB64 ? b64DecodeUtf8(emailB64) : '';
+  } catch (e) { /* тихо игнорируем — просто оставит поля пустыми */ }
+}
+
+async function saveNotifyConfig() {
+  const telegram_token = document.getElementById('notify-telegram-token').value.trim();
+  const telegram_chat_id = document.getElementById('notify-telegram-chatid').value.trim();
+  const notify_email = document.getElementById('notify-email').value.trim();
+  const data = await post('/api/set_notify_config', {telegram_token, telegram_chat_id, notify_email});
+  renderOutput('set_notify_config', data);
+}
+
+async function testNotifyConfig() {
+  const box = document.getElementById('notify-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">отправляю тестовое уведомление...</span>';
+  const data = await post('/api/test_notify', {});
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || 'OK')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('test_notify', data);
+}
+
+async function loadSmtpConfig() {
+  try {
+    const res = await fetch('/api/get_smtp_config');
+    const data = await res.json();
+    const line = (data.output || '').split('\n').find(l => l.trim().startsWith('SMTPCONF|'));
+    if (!line) return;
+    const parts = line.trim().split('|');
+    if (parts.length < 6) return;
+    const [, hostB64, portB64, fromB64, userB64, hasPassword] = parts;
+    document.getElementById('smtp-host').value = hostB64 ? b64DecodeUtf8(hostB64) : '';
+    document.getElementById('smtp-port').value = portB64 ? b64DecodeUtf8(portB64) : '587';
+    document.getElementById('smtp-from').value = fromB64 ? b64DecodeUtf8(fromB64) : '';
+    document.getElementById('smtp-user').value = userB64 ? b64DecodeUtf8(userB64) : '';
+    const pwInput = document.getElementById('smtp-password');
+    const pwLabel = document.getElementById('smtp-password-label');
+    pwInput.value = '';
+    if (hasPassword === 'yes') {
+      pwInput.placeholder = '•••••••• (уже сохранён — оставь пустым, чтобы не менять)';
+      pwLabel.textContent = 'пароль (уже задан — заполни, только если хочешь его сменить)';
+    } else {
+      pwInput.placeholder = '';
+      pwLabel.textContent = 'пароль (или пароль приложения для Gmail/Яндекса)';
+    }
+  } catch (e) { /* тихо игнорируем */ }
+}
+
+async function saveSmtpConfig() {
+  const host = document.getElementById('smtp-host').value.trim();
+  const port = document.getElementById('smtp-port').value.trim() || '587';
+  const from_addr = document.getElementById('smtp-from').value.trim();
+  const user = document.getElementById('smtp-user').value.trim();
+  const password = document.getElementById('smtp-password').value;
+  if (!host || !from_addr) { logLine('ERROR: укажи хотя бы SMTP-сервер и адрес отправителя', 'line-err'); return; }
+  const data = await post('/api/set_smtp_config', {host, port, from_addr, user, password});
+  renderOutput('set_smtp_config', data);
+  if (data.ok) loadSmtpConfig();
+}
+
+async function testSmtpSend() {
+  const email = document.getElementById('smtp-test-email').value.trim();
+  if (!email) { logLine('ERROR: укажи адрес, куда прислать тестовое письмо', 'line-err'); return; }
+  const box = document.getElementById('smtp-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">отправляю письмо...</span>';
+  const data = await post('/api/test_smtp_send', {email});
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || 'OK')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('test_smtp_send ' + email, data);
+}
+
+async function checkForUpdate() {
+  const body = document.getElementById('update-status-body');
+  body.innerHTML = '<p class="badge-off">проверяю...</p>';
+  const res = await fetch('/api/check_update');
+  const data = await res.json();
+  const line = (data.output || '').split('\n').find(l => l.trim().startsWith('UPDATECHECK|'));
+  if (!line) {
+    body.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'не удалось проверить обновления')}</p>`;
+    return;
+  }
+  const parts = line.trim().split('|');
+  const [, status, current, latest, extra] = parts;
+  if (status === 'error') {
+    body.innerHTML = `
+      <p class="badge-off">установлена версия: ${escapeHtml(current)}</p>
+      <p class="line-fail">не удалось проверить обновления: ${escapeHtml(extra || '')}</p>
+    `;
+  } else if (status === 'uptodate') {
+    body.innerHTML = `<p class="badge-on">● установлена актуальная версия: ${escapeHtml(current)}</p>`;
+  } else if (status === 'available') {
+    body.innerHTML = `
+      <p class="badge-off">установлена версия: ${escapeHtml(current)}</p>
+      <p class="badge-on">● доступно обновление: <b>${escapeHtml(latest)}</b>
+        ${extra ? `(<a href="${escapeHtml(extra)}" target="_blank" rel="noopener">что нового</a>)` : ''}
+      </p>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="applyUpdate('${escapeHtml(latest)}')">[ обновить до ${escapeHtml(latest)} ]</button>
+      </div>
+    `;
+  }
+}
+
+let updateLogPollTimer = null;
+
+async function applyUpdate(tag) {
+  if (!confirm(
+    'Обновить панель до версии ' + tag + '?\n\n' +
+    'Это скачает релиз с GitHub и запустит установщик заново поверх текущей ' +
+    'установки. Может занять несколько минут, панель на секунду перезапустится ' +
+    'в процессе — это нормально. Шары и локальные пользователи не затрагиваются.'
+  )) return;
+
+  const data = await post('/api/apply_update', {tag});
+  renderOutput('apply_update ' + tag, data);
+  if (data.ok) {
+    logLine('обновление запущено в фоне — журнал ниже обновляется автоматически', 'line-cmd');
+    document.getElementById('update-log-output').style.display = 'block';
+    startUpdateLogPolling(tag);
+  }
+}
+
+function startUpdateLogPolling(tag) {
+  if (updateLogPollTimer) clearInterval(updateLogPollTimer);
+  pollUpdateLog(tag);
+  updateLogPollTimer = setInterval(() => pollUpdateLog(tag), 2000);
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function pollUpdateLog(tag) {
+  const box = document.getElementById('update-log-output');
+  let data;
+  try {
+    const res = await fetch('/api/update_log');
+    data = await res.json();
+  } catch (e) {
+    return; // сервер мог быть посреди рестарта — просто попробуем на следующем тике
+  }
+  if (!data || !data.ok) return;
+
+  const fullLog = data.output || '';
+  // Показываем только СЕГМЕНТ лога, относящийся к ЭТОЙ конкретной попытке
+  // обновления — иначе строки от прошлых (возможно, неудачных) попыток
+  // сбивали бы определение "успех/ошибка" ложными совпадениями.
+  const marker = 'Запуск обновления до ' + tag;
+  const idx = fullLog.lastIndexOf(marker);
+  const segment = idx >= 0 ? fullLog.slice(idx) : fullLog;
+  smoothBoxUpdate(box, escapeHtml(segment));
+
+  const successRe = new RegExp('OK: панель обновлена до версии ' + escapeRegex(tag));
+  if (successRe.test(segment)) {
+    clearInterval(updateLogPollTimer);
+    updateLogPollTimer = null;
+    logLine('обновление до ' + tag + ' завершено успешно — перезагружаю страницу...', 'line-ok');
+    waitForServerAndReload();
+    return;
+  }
+  if (/ERROR:/.test(segment)) {
+    clearInterval(updateLogPollTimer);
+    updateLogPollTimer = null;
+    logLine('обновление завершилось с ошибкой — подробности в журнале ниже', 'line-err');
+  }
+}
+
+async function waitForServerAndReload() {
+  // Сервис вот-вот перезапустится (или уже перезапускается) — обычная
+  // перезагрузка страницы в лоб рискует поймать сервер посреди рестарта и
+  // показать ошибку соединения. Вместо этого сначала дожидаемся, пока
+  // сервер снова начнёт отвечать, и только тогда делаем настоящую F5.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const res = await fetch('/login', {cache: 'no-store'});
+      if (res.status === 200) {
+        location.reload();
+        return;
+      }
+    } catch (e) {
+      // сервер ещё не поднялся — пробуем на следующей секунде
+    }
+  }
+  location.reload(); // не дождались за 30 секунд — перезагружаем всё равно
+}
+
+async function refreshUpdateLog() {
+  const box = document.getElementById('update-log-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/update_log');
+  const data = await res.json();
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || '(пусто)')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+}
+
+async function refreshAdStatus() {
+  const body = document.getElementById('ad-status-body');
+  body.innerHTML = '<p class="badge-off">загрузка...</p>';
+  const res = await fetch('/api/ad_status');
+  const data = await res.json();
+  const line = (data.output || '').split('\n').find(l => l.trim().startsWith('ADSTATUS|'));
+  const joinPanel = document.getElementById('ad-join-panel');
+  const leavePanel = document.getElementById('ad-leave-panel');
+  if (!line) {
+    body.innerHTML = '<p class="line-fail">не удалось получить статус</p>';
+    return;
+  }
+  const parts = line.trim().split('|');
+  const [, configured, joined, wgB64, rlB64] = parts;
+  const wg = wgB64 ? b64DecodeUtf8(wgB64) : '';
+  const rl = rlB64 ? b64DecodeUtf8(rlB64) : '';
+
+  if (joined === 'yes') {
+    body.innerHTML = `<p class="badge-on">● присоединён к домену <b>${escapeHtml(rl)}</b> (workgroup ${escapeHtml(wg)})</p>`;
+    joinPanel.style.display = 'none';
+    leavePanel.style.display = 'block';
+  } else if (configured === 'yes') {
+    body.innerHTML = `<p class="line-fail">● AD настроен в smb.conf (${escapeHtml(rl)}), но testjoin не подтверждает — проверь соединение кнопкой ниже</p>`;
+    joinPanel.style.display = 'none';
+    leavePanel.style.display = 'block';
+  } else {
+    body.innerHTML = '<p class="badge-off">○ AD не настроен — сервер работает как обычно, локальные пользователи и шары не затронуты</p>';
+    joinPanel.style.display = 'block';
+    leavePanel.style.display = 'none';
+  }
+}
+
+async function refreshAdTest() {
+  const box = document.getElementById('ad-test-output');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="badge-off">проверяю...</span>';
+  const res = await fetch('/api/ad_test');
+  const data = await res.json();
+  smoothBoxUpdate(box, data.ok
+    ? escapeHtml(data.output || '')
+    : `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+  renderOutput('ad_test', data);
+}
+
+async function joinAd() {
+  const workgroup = document.getElementById('ad-workgroup').value.trim();
+  const realm = document.getElementById('ad-realm').value.trim();
+  const range_start = document.getElementById('ad-range-start').value.trim() || '10000';
+  const range_end = document.getElementById('ad-range-end').value.trim() || '999999';
+  const admin_user = document.getElementById('ad-admin-user').value.trim();
+  const admin_password = document.getElementById('ad-admin-password').value;
+
+  if (!workgroup || !realm || !admin_user || !admin_password) {
+    logLine('ERROR: заполни домен, realm, администратора и пароль', 'line-err');
+    return;
+  }
+  if (!confirm('Присоединить этот сервер к домену ' + realm + '? Потребуется установка пакетов winbind/krb5, изменение smb.conf, nsswitch.conf и krb5.conf.')) return;
+
+  logLine('$ ad_join ' + workgroup + ' ' + realm + ' (выполняется, может занять минуту)...', 'line-cmd');
+  const data = await post('/api/ad_join', {workgroup, realm, range_start, range_end, admin_user, admin_password});
+  renderOutput('ad_join ' + workgroup + ' ' + realm, data);
+  document.getElementById('ad-admin-password').value = '';
+  if (data.ok) refreshAdStatus();
+}
+
+async function leaveAd() {
+  const admin_user = document.getElementById('ad-leave-admin-user').value.trim();
+  const admin_password = document.getElementById('ad-leave-admin-password').value;
+  if (!admin_user || !admin_password) {
+    logLine('ERROR: укажи администратора домена и пароль для выхода', 'line-err');
+    return;
+  }
+  if (!confirm('Выйти из домена? Локальные пользователи и шары не тронутся, но доступ AD-пользователей пропадёт.')) return;
+
+  const data = await post('/api/ad_leave', {admin_user, admin_password});
+  renderOutput('ad_leave ' + admin_user, data);
+  document.getElementById('ad-leave-admin-password').value = '';
+  if (data.ok) refreshAdStatus();
+}
+
+async function refreshAdUsers() {
+  const box = document.getElementById('ad-users-output');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_users');
+  const data = await res.json();
+  if (!data.ok) {
+    smoothBoxUpdate(box, `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADUSER|'));
+  if (lines.length === 0) {
+    smoothBoxUpdate(box, '<span class="badge-off">пользователей не найдено (или winbind ещё не готов)</span>');
+    return;
+  }
+  const names = lines.map(l => {
+    try { return b64DecodeUtf8(l.split('|')[1]); } catch (e) { return '?'; }
+  });
+  smoothBoxUpdate(box, escapeHtml(names.join('\n')));
+}
+
+async function refreshAdGroups() {
+  const box = document.getElementById('ad-groups-output');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_groups');
+  const data = await res.json();
+  if (!data.ok) {
+    smoothBoxUpdate(box, `<span class="line-fail">${escapeHtml(data.output || 'ошибка')}</span>`);
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADGROUP|'));
+  if (lines.length === 0) {
+    smoothBoxUpdate(box, '<span class="badge-off">групп не найдено (или winbind ещё не готов)</span>');
+    return;
+  }
+  const names = lines.map(l => {
+    try { return b64DecodeUtf8(l.split('|')[1]); } catch (e) { return '?'; }
+  });
+  smoothBoxUpdate(box, escapeHtml(names.join('\n')));
+}
+
+// --- Общая логика выбора типа доступа к шаре (локальная группа / AD-группа /
+// AD-пользователи) — переиспользуется и формой создания шары, и модалкой
+// редактирования уже существующей. prefix — префикс id-шников ("share" или
+// "group-modal"), см. соответствующую разметку.
+
+function onAccessTypeChange(prefix) {
+  const type = document.getElementById(prefix + '-access-type').value;
+  document.getElementById(prefix + '-access-local-block').style.display = type === 'local' ? 'block' : 'none';
+  document.getElementById(prefix + '-access-adgroup-block').style.display = type === 'ad_group' ? 'block' : 'none';
+  document.getElementById(prefix + '-access-adusers-block').style.display = type === 'ad_users' ? 'block' : 'none';
+  const guestBlock = document.getElementById(prefix + '-access-guest-block');
+  if (guestBlock) guestBlock.style.display = type === 'guest' ? 'block' : 'none';
+}
+
+function computeGroupValue(prefix) {
+  const type = document.getElementById(prefix + '-access-type').value;
+  if (type === 'local') {
+    return document.getElementById(prefix + '-group').value.trim() || 'sharegroup';
+  }
+  if (type === 'ad_group') {
+    const sel = document.getElementById(prefix + '-adgroup-select');
+    return sel.value ? 'AD:' + sel.value : '';
+  }
+  if (type === 'ad_users') {
+    const selected = Array.from(adUserSelections[prefix] || []);
+    return selected.length ? 'ADUSERS:' + selected.join(',') : '';
+  }
+  if (type === 'guest') {
+    return 'GUEST';
+  }
+  return '';
+}
+
+async function loadAdGroupsInto(selectId) {
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '<option value="">загрузка...</option>';
+  const res = await fetch('/api/ad_list_groups');
+  const data = await res.json();
+  if (!data.ok) {
+    sel.innerHTML = '<option value="">ошибка — сервер присоединён к AD?</option>';
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADGROUP|'));
+  sel.innerHTML = '';
+  lines.forEach(line => {
+    let name;
+    try { name = b64DecodeUtf8(line.split('|')[1]); } catch (e) { return; }
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if (sel.options.length === 0) sel.innerHTML = '<option value="">групп не найдено</option>';
+}
+
+// Хранилище выбранных AD-пользователей по префиксу ("share" — форма
+// создания, "group-modal" — редактирование существующей шары). Обычный
+// select multiple с Ctrl/Cmd-кликом неочевиден — вместо него список
+// строк-чекбоксов с поиском, клик по строке целиком переключает выбор.
+const adUserSelections = { 'share': new Set(), 'group-modal': new Set() };
+
+async function loadAdUsersInto(prefix) {
+  const box = document.getElementById(prefix + '-adusers-list');
+  box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/ad_list_users');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<span class="line-fail">${escapeHtml(data.output || 'ошибка — сервер присоединён к AD?')}</span>`;
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ADUSER|'));
+  if (lines.length === 0) {
+    box.innerHTML = '<span class="badge-off">пользователей не найдено</span>';
+    return;
+  }
+  box.innerHTML = '';
+  const selected = adUserSelections[prefix] || new Set();
+  lines.forEach(line => {
+    let name;
+    try { name = b64DecodeUtf8(line.split('|')[1]); } catch (e) { return; }
+    const row = document.createElement('div');
+    row.className = 'ad-user-row' + (selected.has(name) ? ' ad-user-selected' : '');
+    row.dataset.name = name.toLowerCase();
+    row.onclick = () => toggleAdUserSelection(prefix, name, row);
+    row.innerHTML = `<input type="checkbox" ${selected.has(name) ? 'checked' : ''}><span>${escapeHtml(name)}</span>`;
+    box.appendChild(row);
+  });
+  updateAdUserCount(prefix);
+}
+
+function toggleAdUserSelection(prefix, name, rowEl) {
+  const set = adUserSelections[prefix] || (adUserSelections[prefix] = new Set());
+  const checkbox = rowEl.querySelector('input[type="checkbox"]');
+  if (set.has(name)) {
+    set.delete(name);
+    rowEl.classList.remove('ad-user-selected');
+    checkbox.checked = false;
+  } else {
+    set.add(name);
+    rowEl.classList.add('ad-user-selected');
+    checkbox.checked = true;
+  }
+  updateAdUserCount(prefix);
+}
+
+function updateAdUserCount(prefix) {
+  const el = document.getElementById(prefix + '-adusers-count');
+  if (!el) return;
+  const n = (adUserSelections[prefix] || new Set()).size;
+  el.textContent = 'выбрано: ' + n;
+}
+
+function filterAdUserPicker(prefix) {
+  const q = document.getElementById(prefix + '-adusers-filter').value.trim().toLowerCase();
+  const box = document.getElementById(prefix + '-adusers-list');
+  box.querySelectorAll('.ad-user-row').forEach(row => {
+    const match = !q || (row.dataset.name || '').includes(q);
+    row.classList.toggle('ad-user-hidden', !match);
+  });
+}
+
+let groupModalState = { name: null };
+
+function openGroupModal(name, groupB64) {
+  let currentGroup;
+  try { currentGroup = b64DecodeUtf8(groupB64); } catch (e) { currentGroup = 'sharegroup'; }
+  groupModalState.name = name;
+  document.getElementById('group-modal-sharename').textContent = name;
+  let type = 'local', localValue = currentGroup;
+  if (currentGroup === 'GUEST') { type = 'guest'; }
+  else if (currentGroup.startsWith('AD:')) { type = 'ad_group'; }
+  else if (currentGroup.startsWith('ADUSERS:')) { type = 'ad_users'; }
+  document.getElementById('group-modal-access-type').value = type;
+  document.getElementById('group-modal-group').value = type === 'local' ? localValue : 'sharegroup';
+  document.getElementById('group-modal-adusers-filter').value = '';
+  onAccessTypeChange('group-modal');
+  document.getElementById('group-modal-overlay').style.display = 'flex';
+  if (type === 'ad_group') {
+    loadAdGroupsInto('group-modal-adgroup-select').then(() => {
+      document.getElementById('group-modal-adgroup-select').value = currentGroup.slice(3);
+    });
+  } else if (type === 'ad_users') {
+    const preselect = currentGroup.slice(8).split(',').filter(v => v);
+    adUserSelections['group-modal'] = new Set(preselect);
+    loadAdUsersInto('group-modal');
+  } else {
+    adUserSelections['group-modal'] = new Set();
+  }
+}
+
+function closeGroupModal() {
+  document.getElementById('group-modal-overlay').style.display = 'none';
+}
+
+async function saveGroupModal() {
+  const name = groupModalState.name;
+  const group = computeGroupValue('group-modal');
+  if (!group) { logLine('ERROR: выбери группу/пользователей', 'line-err'); return; }
+  const data = await post('/api/set_share_group', {name, group});
+  renderOutput('set_share_group ' + name, data);
+  if (data.ok) {
+    closeGroupModal();
+    refreshShares();
+  }
+}
+
+async function refreshConnections() {
+  const box = document.getElementById('connections-output');
+  if (!box.dataset.loaded) box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/active_connections');
+  const data = await res.json();
+  const text = (data.output || '').trim();
+  box.dataset.loaded = '1';
+  if (!text) {
+    smoothBoxUpdate(box, '<span class="badge-off">нет активных подключений</span>');
+    return;
+  }
+  smoothBoxUpdate(box, data.ok ? escapeHtml(text) : `<span class="line-fail">${escapeHtml(text)}</span>`);
+}
+
+async function refreshDiskUsage() {
+  const body = document.getElementById('diskusage-body');
+  body.innerHTML = '<p class="badge-off">считаю...</p>';
+  const res = await fetch('/api/disk_usage');
+  const data = await res.json();
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('DISK|'));
+  if (lines.length === 0) {
+    body.innerHTML = '<p class="badge-off">шар пока нет</p>';
+    return;
+  }
+  body.innerHTML = '';
+  const fmtBytes = (n) => {
+    n = parseInt(n, 10) || 0;
+    const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  };
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 8) return;
+    const [, name, used, fsSize, fsAvail, fsPct, quotaBytes, status] = parts;
+    const pct = parseInt(fsPct, 10) || 0;
+    const barClass = pct >= 90 ? 'danger' : (pct >= 75 ? 'warn' : '');
+    const usedBytes = parseInt(used, 10) || 0;
+    const quota = parseInt(quotaBytes, 10) || 0;
+    const div = document.createElement('div');
+    div.className = 'disk-row row-in';
+    if (status.includes('ПАПКА')) {
+      div.innerHTML = `<span class="badge-off">${name} — папка не найдена на диске</span>`;
+    } else {
+      let quotaHtml = '';
+      if (quota > 0) {
+        const quotaPct = Math.min(Math.round((usedBytes / quota) * 100), 999);
+        const overQuota = usedBytes > quota;
+        const quotaBarClass = overQuota ? 'danger' : (quotaPct >= 80 ? 'warn' : '');
+        quotaHtml = `
+          <div class="row" style="justify-content:space-between; margin-top:6px;">
+            <span style="color:var(--fg-dim); font-size:12px;">квота: ${fmtBytes(quota)}</span>
+            <span class="${overQuota ? 'line-fail' : ''}" style="font-size:12px; ${overQuota ? '' : 'color:var(--fg-dim);'}">${overQuota ? 'ПРЕВЫШЕНА — ' : ''}${quotaPct}% от лимита</span>
+          </div>
+          <div class="disk-bar-track"><div class="disk-bar-fill ${quotaBarClass}" style="width:${Math.min(quotaPct,100)}%"></div></div>
+        `;
+      }
+      div.innerHTML = `
+        <div class="row" style="justify-content:space-between;">
+          <span class="badge-on">${name}</span>
+          <span style="color:var(--fg-dim); font-size:12px;">занято шарой: ${fmtBytes(used)} · раздел: ${fmtBytes(fsAvail)} свободно из ${fmtBytes(fsSize)} (${pct}% занято)</span>
+        </div>
+        <div class="disk-bar-track"><div class="disk-bar-fill ${barClass}" style="width:${Math.min(pct,100)}%"></div></div>
+        ${quotaHtml}
+      `;
+    }
+    body.appendChild(div);
+  });
+}
+
+let mountModalState = { device: null };
+
+function fmtBytesG(n) {
+  n = parseInt(n, 10) || 0;
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+async function refreshDisks() {
+  const body = document.getElementById('diskslist-body');
+  body.innerHTML = '<p class="badge-off">загрузка...</p>';
+  document.getElementById('diskdetails-output').style.display = 'none';
+
+  const [devRes, smartRes] = await Promise.all([
+    fetch('/api/list_block_devices'),
+    fetch('/api/disk_smart_summary')
+  ]);
+  const devData = await devRes.json();
+  const smartData = await smartRes.json();
+
+  const devLines = (devData.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('BLOCKDEV|'));
+  const smartLines = (smartData.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('SMART|'));
+
+  const smartByDevice = {};
+  smartLines.forEach(line => {
+    const [, dev, health, temp] = line.split('|');
+    smartByDevice[dev] = { health, temp: parseInt(temp, 10) || 0 };
+  });
+
+  if (devLines.length === 0) {
+    body.innerHTML = '<p class="badge-off">' + (devData.ok ? 'дисков не найдено' : escapeHtml(devData.output || 'ошибка')) + '</p>';
+    return;
+  }
+
+  body.innerHTML = '';
+  devLines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 7) return;
+    const [, devPath, size, fstype, mountB64, dtype, modelB64] = parts;
+    let mountpoint = '';
+    let model = '';
+    try { mountpoint = mountB64 ? b64DecodeUtf8(mountB64) : ''; } catch (e) {}
+    try { model = modelB64 ? b64DecodeUtf8(modelB64) : ''; } catch (e) {}
+    const isMounted = !!mountpoint;
+    const isRootOrSystem = ['/', '/boot', '/boot/efi', '/home', '/var'].includes(mountpoint);
+    const smart = smartByDevice[devPath];
+    let smartLabel = '';
+    if (smart) {
+      const cls = smart.health === 'FAILED' ? 'line-fail' : (smart.health === 'PASSED' ? '' : '');
+      const healthText = smart.health === 'PASSED' ? 'здоров' : (smart.health === 'FAILED' ? 'ОТКАЗ, СРОЧНО ЗАМЕНИТЬ' : 'нет данных SMART');
+      smartLabel = ` <span class="${cls}">· SMART: ${healthText}${smart.temp > 0 ? ', ' + smart.temp + '°C' : ''}</span>`;
+    }
+    const div = document.createElement('div');
+    div.className = 'disk-row row-in';
+    div.innerHTML = `
+      <div class="row" style="justify-content:space-between;">
+        <span class="badge-on">${devPath} <span style="color:var(--fg-dim); font-size:12px;">${size} · ${fstype}${model ? ' · ' + escapeHtml(model) : ''}${isMounted ? ' · ' + escapeHtml(mountpoint) : ' · не смонтирован'}</span>${smartLabel}</span>
+        <span class="actions">
+          ${dtype === 'disk' ? `<button onclick="showSmartDetails('${devPath}')">SMART подробно</button>` : ''}
+          ${!isMounted && fstype !== 'none' ? `<button onclick="openMountModal('${devPath}')">примонтировать</button>` : ''}
+          ${isMounted && !isRootOrSystem ? `<button class="danger" onclick="unmountDiskConfirm('${mountpoint.replace(/'/g, "\\'")}')">отмонтировать</button>` : ''}
+        </span>
+      </div>
+    `;
+    body.appendChild(div);
+  });
+}
+
+async function refreshBackupConfig() {
+  const statusBox = document.getElementById('backup-config-status');
+  const sharesBox = document.getElementById('backup-shares-list');
+  statusBox.innerHTML = '<p class="badge-off">загрузка...</p>';
+  sharesBox.innerHTML = '';
+
+  const res = await fetch('/api/get_backup_config');
+  const data = await res.json();
+  if (!data.ok) {
+    statusBox.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const confLine = lines.find(l => l.startsWith('BACKUPCONF|'));
+  const shareLines = lines.filter(l => l.startsWith('BACKUPSHARE|'));
+
+  if (confLine) {
+    const parts = confLine.split('|');
+    let dest = '';
+    try { dest = parts[1] ? b64DecodeUtf8(parts[1]) : ''; } catch (e) { dest = ''; }
+    const retain = parts[2] || '7';
+    const exists = parts[3] === 'yes';
+    const freeBytes = parts[4] || '0';
+    const scheduleTime = parts[5] || '02:30';
+
+    document.getElementById('backup-dest-input').value = dest;
+    document.getElementById('backup-retain-input').value = retain;
+    document.getElementById('backup-time-input').value = scheduleTime;
+
+    if (!dest) {
+      statusBox.innerHTML = '<p class="badge-off">бэкап ещё не настроен — укажи папку назначения ниже</p>';
+    } else if (!exists) {
+      statusBox.innerHTML = `<p class="line-fail">⚠ папка «${escapeHtml(dest)}» сейчас НЕ существует — бэкапы не будут создаваться, пока это не исправить</p>`;
+    } else {
+      statusBox.innerHTML = `<p class="badge-on">✔ ${escapeHtml(dest)} · свободно ${fmtBytesG(freeBytes)} · хранится последних архивов на шару: ${escapeHtml(retain)} · запуск ежедневно в ${escapeHtml(scheduleTime)}</p>`;
+    }
+  }
+
+  if (shareLines.length === 0) {
+    sharesBox.innerHTML = '<p class="badge-off">ни у одной шары не включён бэкап по расписанию (см. вкладку «Шары и пользователи»)</p>';
+    return;
+  }
+
+  let html = '<p class="modal-sub" style="margin:0 0 6px;">Шары с включённым бэкапом:</p>';
+  shareLines.forEach(line => {
+    const p = line.split('|');
+    let name, lastFile;
+    try { name = b64DecodeUtf8(p[1]); } catch (e) { return; }
+    try { lastFile = p[2] ? b64DecodeUtf8(p[2]) : ''; } catch (e) { lastFile = ''; }
+    const size = p[3] || '0';
+    const dateTs = parseInt(p[4] || '0', 10);
+
+    let info;
+    if (lastFile) {
+      const date = new Date(dateTs * 1000);
+      info = `последний архив: ${escapeHtml(lastFile)} (${fmtBytesG(size)}, ${date.toLocaleString('ru-RU')})`;
+    } else {
+      info = 'архивов ещё нет — либо бэкап только что включили, либо ждёт ближайшего запуска по расписанию';
+    }
+    html += `<div class="disk-row row-in"><span class="badge-on">${escapeHtml(name)}</span> <span style="color:var(--fg-dim); font-size:12px;">— ${info}</span></div>`;
+  });
+  sharesBox.innerHTML = html;
+}
+
+async function saveBackupConfig() {
+  const dest = document.getElementById('backup-dest-input').value.trim();
+  const retain_count = parseInt(document.getElementById('backup-retain-input').value, 10) || 7;
+  if (!dest) { logLine('ERROR: укажи папку назначения бэкапов', 'line-err'); return; }
+  const data = await post('/api/set_backup_config', {dest, retain_count});
+  renderOutput('set_backup_config ' + dest, data);
+  if (data.ok) refreshBackupConfig();
+}
+
+async function runBackupNow() {
+  if (!confirm('Запустить бэкап всех шар с включённым флагом прямо сейчас (не дожидаясь ночного расписания)?')) return;
+  const box = document.getElementById('backup-run-output');
+  box.style.display = 'block';
+  box.textContent = 'запускаю...';
+  const data = await post('/api/run_backup_now', {});
+  box.textContent = data.output || '(пусто)';
+  if (data.ok) refreshBackupConfig();
+}
+
+async function saveBackupSchedule() {
+  const time = document.getElementById('backup-time-input').value;
+  if (!time) { logLine('ERROR: укажи время запуска', 'line-err'); return; }
+  const data = await post('/api/set_backup_schedule', {time});
+  renderOutput('set_backup_schedule ' + time, data);
+  if (data.ok) refreshBackupConfig();
+}
+
+async function refreshBackupFiles() {
+  const box = document.getElementById('backup-files-list');
+  box.innerHTML = '<p class="badge-off">загрузка...</p>';
+
+  const res = await fetch('/api/list_backup_files');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('BACKUPFILE|'));
+  if (lines.length === 0) {
+    box.innerHTML = '<p class="badge-off">архивов пока нет</p>';
+    return;
+  }
+
+  let html = '';
+  lines.forEach(line => {
+    const p = line.split('|');
+    let fname;
+    try { fname = b64DecodeUtf8(p[1]); } catch (e) { return; }
+    const size = p[2] || '0';
+    const mtime = parseInt(p[3] || '0', 10);
+    const date = new Date(mtime * 1000).toLocaleString('ru-RU');
+    html += `
+      <div class="disk-row row-in">
+        <span class="badge-on" style="overflow-wrap:anywhere;">${escapeHtml(fname)} <span style="color:var(--fg-dim); font-size:12px;">(${fmtBytesG(size)}, ${date})</span></span>
+        <a href="/api/download_backup/${encodeURIComponent(fname)}" download>[ скачать ]</a>
+      </div>`;
+  });
+  box.innerHTML = html;
+}
+
+async function refreshAdmins() {
+  const box = document.getElementById('admins-list-box');
+  box.innerHTML = '<p class="badge-off">загрузка...</p>';
+
+  const res = await fetch('/api/list_admins');
+  const data = await res.json();
+  if (!data.ok) {
+    box.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const current = data.current || '';
+  let html = '';
+  data.admins.forEach(username => {
+    const isCurrent = username === current;
+    html += `
+      <div class="userline row-in">
+        <span class="badge-on">● ${escapeHtml(username)}${isCurrent ? ' <span style="color:var(--fg-dim); font-size:12px;">(вы сейчас вошли под этой учёткой)</span>' : ''}</span>
+        <span class="actions">
+          ${isCurrent ? '' : `<button class="danger" onclick="deleteAdmin('${escapeHtml(username)}')">удалить</button>`}
+        </span>
+      </div>`;
+  });
+  box.innerHTML = html || '<p class="badge-off">администраторов нет (быть такого не должно)</p>';
+}
+
+async function createAdmin() {
+  const username = document.getElementById('new-admin-username').value.trim();
+  const password = document.getElementById('new-admin-password').value;
+  if (!username || !password) { logLine('ERROR: укажи имя и пароль', 'line-err'); return; }
+  const data = await post('/api/create_admin', {username, password});
+  renderOutput('create_admin ' + username, data);
+  if (data.ok) {
+    document.getElementById('new-admin-username').value = '';
+    document.getElementById('new-admin-password').value = '';
+    refreshAdmins();
+  }
+}
+
+async function deleteAdmin(username) {
+  if (!confirm(`Удалить администратора '${username}'? Он больше не сможет войти в панель.`)) return;
+  const data = await post('/api/delete_admin', {username});
+  renderOutput('delete_admin ' + username, data);
+  if (data.ok) refreshAdmins();
+}
+
+async function changeOwnPassword() {
+  const current_password = document.getElementById('change-pw-current').value;
+  const new_password = document.getElementById('change-pw-new').value;
+  if (!current_password || !new_password) { logLine('ERROR: заполни оба поля', 'line-err'); return; }
+  const data = await post('/api/change_own_password', {current_password, new_password});
+  renderOutput('change_own_password', data);
+  if (data.ok) {
+    document.getElementById('change-pw-current').value = '';
+    document.getElementById('change-pw-new').value = '';
+  }
+}
+
+async function findIsoFiles() {
+  const path = document.getElementById('iso-search-path').value.trim() || '/srv';
+  const body = document.getElementById('iso-list-body');
+  body.innerHTML = '<p class="badge-off">ищу...</p>';
+  const res = await fetch('/api/list_iso_files', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+    body: JSON.stringify({path})
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    body.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('ISOFILE|'));
+  if (lines.length === 0) {
+    body.innerHTML = '<p class="badge-off">ISO-файлов не найдено в этой папке</p>';
+    return;
+  }
+  body.innerHTML = '';
+  lines.forEach(line => {
+    const parts = line.split('|');
+    if (parts.length < 3) return;
+    const [, pathB64, size, mountedFlag, mountpointB64] = parts;
+    let isoPath;
+    try { isoPath = b64DecodeUtf8(pathB64); } catch (e) { return; }
+    const row = document.createElement('div');
+    row.className = 'disk-row row-in';
+    const isMounted = mountedFlag === '1';
+    let mountpoint = '';
+    if (isMounted && mountpointB64) {
+      try { mountpoint = b64DecodeUtf8(mountpointB64); } catch (e) { mountpoint = ''; }
+    }
+    let controlsHtml;
+    if (isMounted) {
+      controlsHtml = `
+        <span class="badge-on">смонтирован в ${escapeHtml(mountpoint || '?')}</span>
+        <button class="danger" onclick="unmountDiskConfirm('${(mountpoint || '').replace(/'/g, "\\'")}')">[ отмонтировать ]</button>
+        <button class="danger" onclick="deleteIsoFile('${pathB64}')">[ удалить ]</button>
+      `;
+    } else {
+      const inputId = 'iso-mount-' + Math.random().toString(36).slice(2, 9);
+      controlsHtml = `
+        <input id="${inputId}" placeholder="/mnt/iso" style="width:160px; margin:0;">
+        <button onclick="mountIso('${pathB64}', '${inputId}')">[ смонтировать ]</button>
+        <button class="danger" onclick="deleteIsoFile('${pathB64}')">[ удалить ]</button>
+      `;
+    }
+    row.innerHTML = `
+      <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <span class="badge-on" style="overflow-wrap:anywhere;">${escapeHtml(isoPath)} <span style="color:var(--fg-dim); font-size:12px;">(${fmtBytesG(size)})</span></span>
+        <span class="row" style="gap:6px;">
+          ${controlsHtml}
+        </span>
+      </div>
+    `;
+    body.appendChild(row);
+  });
+}
+
+async function mountIso(isoPathB64, inputId) {
+  let isoPath;
+  try { isoPath = b64DecodeUtf8(isoPathB64); } catch (e) { logLine('ERROR: не удалось прочитать путь к ISO', 'line-err'); return; }
+  const mountpoint = document.getElementById(inputId).value.trim();
+  if (!mountpoint) { logLine('ERROR: укажи точку монтирования', 'line-err'); return; }
+  const data = await post('/api/mount_iso', {iso_path: isoPath, mountpoint});
+  renderOutput('mount_iso ' + isoPath + ' ' + mountpoint, data);
+  if (data.ok) refreshDisks();
+}
+
+async function deleteIsoFile(isoPathB64) {
+  let isoPath;
+  try { isoPath = b64DecodeUtf8(isoPathB64); } catch (e) { logLine('ERROR: не удалось прочитать путь к ISO', 'line-err'); return; }
+  if (!confirm(`Удалить файл ${isoPath}? Это необратимо.`)) return;
+  const data = await post('/api/delete_iso_file', {iso_path: isoPath});
+  renderOutput('delete_iso_file ' + isoPath, data);
+  if (data.ok) findIsoFiles();
+}
+
+async function createIsoDirectory() {
+  const path = document.getElementById('iso-upload-dest').value.trim();
+  if (!path) { logLine('ERROR: укажи путь папки назначения', 'line-err'); return; }
+  const data = await post('/api/create_iso_directory', {path});
+  renderOutput('create_iso_directory ' + path, data);
+}
+
+// --- Загрузка ISO кусками, с докачкой при обрыве ---
+// 10 МБ на кусок — компромисс между числом запросов на 100+ ГБ файл
+// (слишком мелкие куски — тысячи HTTP-запросов, накладные расходы) и
+// разумным временем на один кусок даже на небыстрой сети.
+const ISO_CHUNK_SIZE = 10 * 1024 * 1024;
+
+let isoUploadState = { cancelled: false, sessionId: null, file: null, offset: 0, destDir: '', speedSampleTime: 0, speedSampleOffset: 0 };
+
+function onIsoFileChosen() {
+  const fileInput = document.getElementById('iso-upload-file');
+  const nameEl = document.getElementById('iso-upload-filename');
+  const file = fileInput.files[0];
+  if (file) {
+    nameEl.textContent = `${file.name} (${fmtBytesPlain(file.size)})`;
+    nameEl.className = 'badge-on';
+  } else {
+    nameEl.textContent = 'файл не выбран';
+    nameEl.className = 'badge-off';
+  }
+  document.getElementById('iso-upload-done-banner').style.display = 'none';
+}
+
+function fmtBytesPlain(n) {
+  n = Number(n) || 0;
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function updateIsoUploadProgress(offset, total, statusText) {
+  const pct = total > 0 ? Math.min(100, (offset / total) * 100) : 0;
+  document.getElementById('iso-upload-progress-bar').style.width = pct.toFixed(1) + '%';
+  document.getElementById('iso-upload-progress-text').textContent = pct.toFixed(1) + '%';
+  document.getElementById('iso-upload-status-line').textContent =
+    statusText || `${fmtBytesPlain(offset)} из ${fmtBytesPlain(total)}`;
+}
+
+function updateIsoUploadSpeed(offset, total) {
+  const now = performance.now();
+  const { speedSampleTime, speedSampleOffset } = isoUploadState;
+  const speedLine = document.getElementById('iso-upload-speed-line');
+
+  if (!speedSampleTime) {
+    isoUploadState.speedSampleTime = now;
+    isoUploadState.speedSampleOffset = offset;
+    speedLine.textContent = '';
+    return;
+  }
+
+  const dt = (now - speedSampleTime) / 1000;
+  if (dt < 1) return; // обновляем не чаще раза в секунду — иначе цифра дёргается
+  const dBytes = offset - speedSampleOffset;
+  const speedBps = dBytes / dt;
+
+  isoUploadState.speedSampleTime = now;
+  isoUploadState.speedSampleOffset = offset;
+
+  if (speedBps <= 0) { speedLine.textContent = ''; return; }
+  const remaining = total - offset;
+  const etaSec = remaining / speedBps;
+  speedLine.textContent = `${fmtBytesPlain(speedBps)}/с · осталось примерно ${fmtEta(etaSec)}`;
+}
+
+function fmtEta(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return `${sec} сек`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} мин ${sec % 60} сек`;
+  const hrs = Math.floor(min / 60);
+  return `${hrs} ч ${min % 60} мин`;
+}
+
+async function startIsoUpload() {
+  const fileInput = document.getElementById('iso-upload-file');
+  const destDir = document.getElementById('iso-upload-dest').value.trim();
+  const file = fileInput.files[0];
+
+  if (!file) { logLine('ERROR: выбери .iso файл', 'line-err'); return; }
+  if (!file.name.toLowerCase().endsWith('.iso')) { logLine('ERROR: файл должен иметь расширение .iso', 'line-err'); return; }
+  if (!destDir) { logLine('ERROR: укажи папку назначения', 'line-err'); return; }
+
+  document.getElementById('iso-upload-progress-wrap').style.display = 'block';
+  document.getElementById('iso-upload-done-banner').style.display = 'none';
+  document.getElementById('iso-upload-start-btn').style.display = 'none';
+  document.getElementById('iso-upload-cancel-btn').style.display = 'inline-block';
+  isoUploadState.cancelled = false;
+  isoUploadState.file = file;
+  isoUploadState.destDir = destDir;
+  isoUploadState.speedSampleTime = 0;
+  isoUploadState.speedSampleOffset = 0;
+
+  updateIsoUploadProgress(0, file.size, 'проверяю, нет ли уже начатой докачки...');
+
+  // Сначала ищем уже начатую, но не завершённую сессию для этого же файла —
+  // если браузер обновляли или связь обрывалась, докачиваем с места
+  // остановки, а не с нуля.
+  let sessionId = null;
+  let startOffset = 0;
+  try {
+    const findRes = await fetch('/api/iso_upload_find_resumable', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
+    });
+    const findData = await findRes.json();
+    if (findData.ok && findData.session_id) {
+      sessionId = findData.session_id;
+      startOffset = findData.bytes_received || 0;
+      logLine(`найдена незавершённая загрузка '${file.name}' — докачиваю с ${fmtBytesPlain(startOffset)}`, 'line-ok');
+    }
+  } catch (e) { /* если не нашли — просто начнём новую сессию ниже */ }
+
+  if (!sessionId) {
+    try {
+      const initRes = await fetch('/api/iso_upload_init', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+        body: JSON.stringify({filename: file.name, dest_dir: destDir, total_size: file.size})
+      });
+      const initData = await initRes.json();
+      if (!initData.ok) {
+        logLine('ERROR: ' + (initData.output || 'не удалось начать загрузку'), 'line-err');
+        resetIsoUploadUI();
+        return;
+      }
+      sessionId = initData.session_id;
+    } catch (e) {
+      logLine('ERROR: не удалось связаться с сервером для начала загрузки', 'line-err');
+      resetIsoUploadUI();
+      return;
+    }
+  }
+
+  isoUploadState.sessionId = sessionId;
+  isoUploadState.offset = startOffset;
+
+  await isoUploadLoop();
+}
+
+async function isoUploadLoop() {
+  const { file, sessionId } = isoUploadState;
+  const total = file.size;
+
+  while (isoUploadState.offset < total) {
+    if (isoUploadState.cancelled) {
+      updateIsoUploadProgress(isoUploadState.offset, total, 'отменено');
+      return;
+    }
+
+    const start = isoUploadState.offset;
+    const end = Math.min(start + ISO_CHUNK_SIZE, total);
+    const chunk = file.slice(start, end);
+
+    let attempt = 0;
+    let success = false;
+    while (attempt < 5 && !success && !isoUploadState.cancelled) {
+      try {
+        const res = await fetch(`/api/iso_upload_chunk?session_id=${encodeURIComponent(sessionId)}&offset=${start}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/octet-stream', 'X-CSRFToken': CSRF_TOKEN},
+          body: chunk
+        });
+        const data = await res.json();
+        if (data.ok) {
+          isoUploadState.offset = data.bytes_received;
+          success = true;
+        } else {
+          attempt++;
+          logLine(`кусок не принят (попытка ${attempt}/5): ${data.output || 'ошибка'}`, 'line-cmd');
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      } catch (e) {
+        attempt++;
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+      }
+    }
+
+    if (!success && !isoUploadState.cancelled) {
+      updateIsoUploadProgress(isoUploadState.offset, total,
+        `связь прервалась на ${fmtBytesPlain(isoUploadState.offset)} — нажми «начать загрузку» ещё раз, чтобы продолжить с этого места`);
+      logLine('ERROR: не удалось отправить кусок после нескольких попыток — загрузку можно продолжить позже с того же места', 'line-err');
+      document.getElementById('iso-upload-start-btn').style.display = 'inline-block';
+      document.getElementById('iso-upload-start-btn').textContent = '[ продолжить загрузку ]';
+      document.getElementById('iso-upload-cancel-btn').style.display = 'none';
+      return;
+    }
+
+    updateIsoUploadProgress(isoUploadState.offset, total);
+    updateIsoUploadSpeed(isoUploadState.offset, total);
+  }
+
+  if (isoUploadState.cancelled) return;
+
+  updateIsoUploadProgress(total, total, 'собираю файл на месте...');
+  document.getElementById('iso-upload-speed-line').textContent = '';
+  try {
+    const finData = await post('/api/iso_upload_finish', {session_id: sessionId});
+    if (finData.ok) {
+      logLine('OK: ' + (finData.output || 'файл загружен'), 'line-ok');
+      updateIsoUploadProgress(total, total, 'готово!');
+      showIsoUploadDoneBanner(isoUploadState.file.name);
+      findIsoFiles();
+    } else {
+      logLine('ERROR: ' + (finData.output || 'не удалось завершить загрузку'), 'line-err');
+    }
+  } catch (e) {
+    logLine('ERROR: не удалось завершить загрузку', 'line-err');
+  }
+
+  setTimeout(resetIsoUploadUI, 2000);
+}
+
+function showIsoUploadDoneBanner(filename) {
+  const banner = document.getElementById('iso-upload-done-banner');
+  document.getElementById('iso-upload-done-name').textContent = filename;
+  banner.style.display = 'block';
+
+  // Браузерное уведомление — полезно на 100+ ГБ файлах, когда переключились
+  // на другую вкладку/приложение и не смотрят прямо на прогресс-бар.
+  // Разрешение спрашивается ненавязчиво, только в момент реального успеха,
+  // а не заранее при открытии страницы.
+  if ('Notification' in window) {
+    if (Notification.permission === 'granted') {
+      new Notification('samba-admin panel', { body: `Загрузка завершена: ${filename}` });
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission().then(perm => {
+        if (perm === 'granted') {
+          new Notification('samba-admin panel', { body: `Загрузка завершена: ${filename}` });
+        }
+      });
+    }
+  }
+}
+
+async function cancelIsoUpload() {
+  isoUploadState.cancelled = true;
+  if (isoUploadState.sessionId) {
+    try {
+      await post('/api/iso_upload_cancel', {session_id: isoUploadState.sessionId});
+    } catch (e) { /* всё равно сбрасываем интерфейс ниже */ }
+  }
+  logLine('Загрузка ISO отменена', 'line-cmd');
+  resetIsoUploadUI();
+}
+
+function resetIsoUploadUI() {
+  document.getElementById('iso-upload-progress-wrap').style.display = 'none';
+  document.getElementById('iso-upload-start-btn').style.display = 'inline-block';
+  document.getElementById('iso-upload-start-btn').textContent = '[ начать загрузку ]';
+  document.getElementById('iso-upload-cancel-btn').style.display = 'none';
+  isoUploadState = { cancelled: false, sessionId: null, file: null, offset: 0, destDir: '', speedSampleTime: 0, speedSampleOffset: 0 };
+}
+
+async function showSmartDetails(device) {
+  const box = document.getElementById('diskdetails-output');
+  box.style.display = 'block';
+  box.textContent = 'загрузка...';
+  const res = await fetch('/api/disk_smart_details', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+    body: JSON.stringify({device})
+  });
+  const data = await res.json();
+  box.innerHTML = data.ok ? escapeHtml(data.output || '') : `<span class="line-fail">${escapeHtml(data.output || '')}</span>`;
+}
+
+function openMountModal(device) {
+  mountModalState.device = device;
+  document.getElementById('mount-modal-device').textContent = device;
+  document.getElementById('mount-modal-path').value = '';
+  document.getElementById('mount-modal-persistent').checked = false;
+  document.getElementById('mount-modal-overlay').style.display = 'flex';
+}
+
+function closeMountModal() {
+  document.getElementById('mount-modal-overlay').style.display = 'none';
+}
+
+async function saveMountModal() {
+  const device = mountModalState.device;
+  const mountpoint = document.getElementById('mount-modal-path').value.trim();
+  const persistent = document.getElementById('mount-modal-persistent').checked;
+  if (!mountpoint) { logLine('ERROR: укажи точку монтирования', 'line-err'); return; }
+  const data = await post('/api/mount_disk', {device, mountpoint, persistent});
+  renderOutput('mount_disk ' + device + ' ' + mountpoint, data);
+  if (data.ok) {
+    closeMountModal();
+    refreshDisks();
+  }
+}
+
+async function unmountDiskConfirm(mountpoint) {
+  if (!confirm('Отмонтировать "' + mountpoint + '"? Убедись, что там нет активных шар.')) return;
+  const remove_fstab = confirm('Заодно убрать запись из /etc/fstab, если она там есть? (OK — убрать, Отмена — оставить)');
+  const data = await post('/api/unmount_disk', {mountpoint, remove_fstab});
+  renderOutput('unmount_disk ' + mountpoint, data);
+  refreshDisks();
+}
+
+async function refreshAuditLog() {
+  const box = document.getElementById('auditlog-output');
+  if (!box.dataset.loaded) box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/audit_log');
+  const data = await res.json();
+  const text = (data.output || '').trim();
+  box.dataset.loaded = '1';
+  if (!text) {
+    smoothBoxUpdate(box, '<span class="badge-off">журнал пока пуст</span>');
+    return;
+  }
+  const lines = text.split('\n');
+  const html = lines.map(l => {
+    const cls = l.includes('| FAIL') ? 'line-fail' : '';
+    return `<span class="${cls}">${escapeHtml(l)}</span>`;
+  }).join('\n');
+  smoothBoxUpdate(box, html);
+}
+
+async function refreshFileAuditLog() {
+  const box = document.getElementById('fileaudit-output');
+  if (!box.dataset.loaded) box.innerHTML = '<span class="badge-off">загрузка...</span>';
+  const res = await fetch('/api/file_audit_log');
+  const data = await res.json();
+  const text = (data.output || '').trim();
+  box.dataset.loaded = '1';
+  if (!text) {
+    smoothBoxUpdate(box, '<span class="badge-off">лог пока пуст</span>');
+    return;
+  }
+  smoothBoxUpdate(box, data.ok ? escapeHtml(text) : `<span class="line-fail">${escapeHtml(text)}</span>`);
+}
+
+// --- Цветовая тема ---
+function setTheme(name) {
+  if (name === 'green') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', name);
+  }
+  try { localStorage.setItem('sambapanel_theme', name); } catch (e) {}
+  document.querySelectorAll('.theme-dot').forEach(d => {
+    d.classList.toggle('theme-active', d.dataset.theme === name);
+  });
+}
+
+(function initTheme() {
+  let saved = 'green';
+  try { saved = localStorage.getItem('sambapanel_theme') || 'green'; } catch (e) {}
+  document.querySelectorAll('.theme-dot').forEach(d => {
+    d.classList.toggle('theme-active', d.dataset.theme === saved);
+  });
+})();
+
+// --- Вкладки ---
+let currentTab = 'shares';
+let monitorTimer = null;
+const MONITOR_REFRESH_MS = 5000;
+
+function showTab(tabName) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('tab-content-active'));
+  document.getElementById('tab-' + tabName).classList.add('tab-content-active');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('tab-active'));
+  const btn = document.getElementById('tabbtn-' + tabName);
+  if (btn) btn.classList.add('tab-active');
+  currentTab = tabName;
+
+  if (tabName === 'monitor') {
+    refreshConnections();
+    refreshAuditLog();
+    refreshFileAuditLog();
+    loadNotifyConfig();
+    loadSmtpConfig();
+    startMonitorAutoRefresh();
+  } else {
+    stopMonitorAutoRefresh();
+  }
+
+  if (tabName === 'ad') {
+    refreshAdStatus();
+  }
+
+  if (tabName === 'disks') {
+    refreshBackupConfig();
+  }
+
+  if (tabName === 'updates') {
+    checkForUpdate();
+  }
+}
+
+function onAutoRefreshToggle() {
+  if (currentTab !== 'monitor') return;
+  if (document.getElementById('monitor-autorefresh').checked) {
+    startMonitorAutoRefresh();
+  } else {
+    stopMonitorAutoRefresh();
+  }
+}
+
+function startMonitorAutoRefresh() {
+  stopMonitorAutoRefresh();
+  const dot = document.getElementById('live-dot');
+  if (!document.getElementById('monitor-autorefresh').checked) {
+    if (dot) dot.classList.remove('live-on');
+    return;
+  }
+  if (dot) dot.classList.add('live-on');
+  monitorTimer = setInterval(() => {
+    refreshConnections();
+    refreshAuditLog();
+    refreshFileAuditLog();
+  }, MONITOR_REFRESH_MS);
+}
+
+function stopMonitorAutoRefresh() {
+  if (monitorTimer) { clearInterval(monitorTimer); monitorTimer = null; }
+  const dot = document.getElementById('live-dot');
+  if (dot) dot.classList.remove('live-on');
+}
+
+// пауза автообновления, когда вкладка браузера свёрнута/неактивна — не грузим
+// сервер запросами, за которыми никто прямо сейчас не наблюдает
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopMonitorAutoRefresh();
+  } else if (currentTab === 'monitor') {
+    startMonitorAutoRefresh();
+  }
+});
+
+refreshUsers();
+refreshShares();
+</script>
+</body>
+</html>

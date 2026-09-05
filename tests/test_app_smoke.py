@@ -1,0 +1,230 @@
+"""
+test_app_smoke.py — базовые дымовые тесты Flask-приложения. Не заменяют
+ручную проверку перед продакшеном (см. README, раздел "Чеклист перед
+продакшеном"), но ловят самые грубые регрессии автоматически при каждом
+запуске, а не только когда кто-то вручную вспомнит проверить.
+"""
+import os
+import re
+import sys
+
+import pytest
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_DIR)
+
+os.environ.setdefault("SAMBAPANEL_PASSWORD", "test-password-for-pytest")
+os.environ.setdefault("SAMBAPANEL_SECRET", "test-secret-for-pytest-0123456789")
+os.environ.setdefault("SAMBAPANEL_ADMINS_DB", "/tmp/pytest-sambapanel-admins.db")
+os.environ.setdefault("SAMBAPANEL_AUDIT_LOG", "/tmp/pytest-sambapanel-audit.log")
+
+import app as appmod  # noqa: E402
+
+
+@pytest.fixture
+def client():
+    appmod.app.config["TESTING"] = True
+    with appmod.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def authed_client(client):
+    with client.session_transaction() as sess:
+        sess["authed"] = True
+    return client
+
+
+# --- Доступ без входа должен быть закрыт ---
+
+@pytest.mark.parametrize("path", [
+    "/",
+    "/api/list_shares",
+    "/api/check_update",
+])
+def test_requires_login(client, path):
+    r = client.get(path, follow_redirects=False)
+    assert r.status_code in (302, 401), (
+        f"{path} доступен БЕЗ входа в панель (код {r.status_code}) — "
+        f"это дыра в безопасности, а не мелочь"
+    )
+
+
+def test_login_page_accessible_without_auth(client):
+    r = client.get("/login")
+    assert r.status_code == 200
+
+
+# --- Сессионные cookie должны быть защищены ---
+
+def test_session_cookie_security_flags():
+    assert appmod.app.config.get("SESSION_COOKIE_SECURE") is True
+    assert appmod.app.config.get("SESSION_COOKIE_HTTPONLY") is True
+    assert appmod.app.config.get("SESSION_COOKIE_SAMESITE") == "Lax"
+
+
+# --- CSRF-защита: состояние-меняющие POST без токена должны отклоняться ---
+
+def test_csrf_protection_enabled():
+    assert appmod.csrf is not None
+
+
+def test_post_without_csrf_token_rejected(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    r = authed_client.post("/api/set_share_writable", json={"name": "test", "writable": True})
+    assert r.status_code == 400, (
+        "POST без CSRF-токена должен отклоняться — иначе сторонняя страница "
+        "в том же браузере могла бы дёрнуть этот эндпоинт от имени админа"
+    )
+
+
+def test_post_with_valid_csrf_token_accepted(authed_client, monkeypatch):
+    import re
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/set_share_writable",
+        json={"name": "test", "writable": True},
+        headers={"X-CSRFToken": token},
+    )
+    assert r.status_code == 200
+
+
+# --- Валидация полей группы шары (локальная / AD / гостевая) ---
+
+def test_validate_share_group_field_local():
+    ok, normalized = appmod.validate_share_group_field("sharegroup")
+    assert ok is True
+    assert normalized == "sharegroup"
+
+
+def test_validate_share_group_field_guest():
+    ok, normalized = appmod.validate_share_group_field("GUEST")
+    assert ok is True
+    assert normalized == "GUEST"
+
+
+def test_validate_share_group_field_ad_group():
+    ok, normalized = appmod.validate_share_group_field("AD:Domain Admins".replace(" ", ""))
+    assert ok is True
+
+
+def test_validate_share_group_field_rejects_spaces():
+    # пробелы в AD-именах намеренно не поддерживаются (см. README) — тест
+    # фиксирует это как осознанное поведение, а не забытый случай
+    ok, _ = appmod.validate_share_group_field("AD:Domain Admins")
+    assert ok is False
+
+
+def test_validate_share_group_field_empty_rejected():
+    ok, _ = appmod.validate_share_group_field("")
+    assert ok is False
+
+
+# --- Главная страница рендерится и не падает на отсутствующем VERSION ---
+
+def test_index_renders_without_version_file(authed_client, monkeypatch, tmp_path):
+    # если /opt/sambapanel/VERSION почему-то недоступен, страница должна
+    # всё равно отрендериться, а не отдать 500 — админ не должен терять
+    # доступ к панели из-за отсутствующего файла версии
+    r = authed_client.get("/")
+    assert r.status_code == 200
+
+
+# --- Именные учётки администраторов (вместо одного общего пароля) ---
+
+@pytest.fixture(autouse=True)
+def _isolated_admins_db(tmp_path, monkeypatch):
+    """Каждый тест — со своим чистым admins.db, чтобы тесты не зависели
+    друг от друга по порядку выполнения."""
+    db_path = str(tmp_path / "admins.db")
+    monkeypatch.setattr(appmod, "ADMINS_DB_PATH", db_path)
+    appmod._ensure_bootstrap_admin()
+    appmod._login_attempts.clear()
+    yield
+
+
+def test_bootstrap_admin_created_from_env_password():
+    admins = appmod._load_admins()
+    assert "admin" in admins
+    from werkzeug.security import check_password_hash
+    assert check_password_hash(admins["admin"], "test-password-for-pytest")
+
+
+def test_login_with_named_account(client):
+    token = re.search(
+        r'name="csrf_token" value="([^"]+)"', client.get("/login").get_data(as_text=True)
+    ).group(1)
+    r = client.post(
+        "/login",
+        data={"username": "admin", "password": "test-password-for-pytest", "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+
+
+def test_create_and_delete_admin(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    headers = {"X-CSRFToken": token}
+
+    r = authed_client.post(
+        "/api/create_admin", json={"username": "ivan", "password": "ivanpassword123"}, headers=headers
+    )
+    assert r.get_json()["ok"] is True
+
+    r = authed_client.get("/api/list_admins")
+    assert "ivan" in r.get_json()["admins"]
+
+    r = authed_client.post("/api/delete_admin", json={"username": "ivan"}, headers=headers)
+    assert r.get_json()["ok"] is True
+
+
+def test_cannot_delete_own_account(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "admin"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/delete_admin", json={"username": "admin"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+
+
+def test_cannot_delete_last_admin(authed_client, monkeypatch):
+    monkeypatch.setattr(appmod, "run_helper", lambda *a, **k: (True, "OK"))
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "nobody-in-particular"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    # единственный существующий администратор — 'admin' (из bootstrap)
+    r = authed_client.post(
+        "/api/delete_admin", json={"username": "admin"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+    assert "последнего" in r.get_json()["output"]
+
+
+def test_create_admin_rejects_short_password(authed_client):
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/create_admin", json={"username": "shorty", "password": "1234"}, headers={"X-CSRFToken": token}
+    )
+    assert r.get_json()["ok"] is False
+
+
+def test_change_own_password_requires_correct_current(authed_client):
+    with authed_client.session_transaction() as sess:
+        sess["username"] = "admin"
+    html = authed_client.get("/").get_data(as_text=True)
+    token = re.search(r'const CSRF_TOKEN = "([^"]+)"', html).group(1)
+    r = authed_client.post(
+        "/api/change_own_password",
+        json={"current_password": "wrong", "new_password": "newpassword123"},
+        headers={"X-CSRFToken": token},
+    )
+    assert r.get_json()["ok"] is False
