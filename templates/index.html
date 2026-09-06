@@ -111,6 +111,14 @@
   .summary-label { font-size: 10px; color: var(--fg-dim); text-align: center; margin-top: 2px; }
   @media (max-width: 700px) { .summary-bar { flex-wrap: wrap; } .summary-stat { flex: 1 1 45%; border-right: none; border-bottom: 1px dashed #163a22; } }
 
+  .update-banner {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 14px; padding: 10px 14px;
+    border: 1px solid var(--amber); background: rgba(255,176,0,0.08);
+    color: var(--amber); font-size: 13px; flex-wrap: wrap;
+  }
+  .update-banner a { color: var(--amber); text-decoration: underline; }
+
   .tabs-bar { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
   .tab-btn {
     background: transparent; border: 1px solid var(--fg-dim); color: var(--fg-dim);
@@ -332,6 +340,14 @@
       <a href="{{ url_for('logout') }}">[ выйти ]</a>
     </div>
   </header>
+
+  <div id="update-banner" class="update-banner" style="display:none;">
+    <span id="update-banner-text"></span>
+    <span class="row" style="gap:8px;">
+      <a href="#" onclick="showTab('updates'); return false;">[ подробнее ]</a>
+      <a href="#" onclick="dismissUpdateBanner(); return false;" title="скрыть до следующего релиза">[ ✕ ]</a>
+    </span>
+  </div>
 
   <div class="summary-bar" id="summary-bar">
     <div class="summary-stat"><span class="summary-num" id="summary-shares">—</span><span class="summary-label">шар</span></div>
@@ -585,6 +601,35 @@
       <div class="row" style="margin-top:10px;">
         <button onclick="refreshBackupFiles()">[ показать файлы ]</button>
       </div>
+    </div>
+
+    <div class="panel userlist">
+      <h2>Теневые копии (Previous Versions)</h2>
+      <p class="modal-sub" style="margin:0 0 8px;">
+        По расписанию делает снапшот каждой шары с включёнными «теневыми
+        копиями» (см. переключатель на самой шаре, вкладка «Шары и
+        пользователи»). Это не настоящий ZFS/Btrfs-снапшот — шары лежат на
+        обычной ext4 — а дерево хардлинков внутри самой шары
+        (<code>.snapshots/@GMT-*</code>, техника rsnapshot): неизменившиеся
+        файлы места на диске не занимают. Windows видит это как обычные
+        Volume Shadow Copies — «Восстановить предыдущую версию» в свойствах
+        файла работает как обычно.
+      </p>
+      <div id="shadow-config-status">
+        <p class="badge-off">жми «обновить», чтобы увидеть текущие настройки</p>
+      </div>
+
+      <label for="shadow-interval-input">интервал снапшотов (часов, 1–168)</label>
+      <input id="shadow-interval-input" type="number" min="1" max="168" value="1">
+
+      <div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap;">
+        <button onclick="refreshShadowConfig()">[ обновить ]</button>
+        <button onclick="saveShadowSchedule()">[ сохранить интервал ]</button>
+        <button onclick="runShadowSnapshotsNow()">[ снапшот сейчас ]</button>
+      </div>
+
+      <div id="shadow-shares-list" style="margin-top:12px;"></div>
+      <div class="output-box" id="shadow-run-output" style="display:none; margin-top:10px;"></div>
     </div>
   </div>
 
@@ -907,6 +952,37 @@
       <div class="modal-actions">
         <button onclick="closeRecycleModal()">[ отмена ]</button>
         <button onclick="saveRecycleModal()">[ сохранить ]</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="shadow-modal-overlay" onclick="if(event.target===this)closeShadowModal()">
+    <div class="modal-box">
+      <p class="modal-title">$ set_share_shadow <span id="shadow-modal-sharename"></span></p>
+      <p class="modal-sub">
+        Периодический снапшот файлов шары (дерево хардлинков внутри неё же,
+        <code>.snapshots/@GMT-*</code>) — не настоящий ZFS/Btrfs-снапшот файловой
+        системы, но Windows видит его как обычные Volume Shadow Copies:
+        «Восстановить предыдущую версию» в свойствах файла работает как обычно.
+        Интервал снапшотов — общий для всех шар, задаётся ниже в разделе
+        «Теневые копии».
+      </p>
+      <div class="row" style="margin-bottom:14px;">
+        <label style="margin:0;"><input type="checkbox" id="shadow-modal-enabled" style="margin:0;" onchange="document.getElementById('shadow-modal-retention-row').style.display=this.checked?'block':'none'"> включить теневые копии</label>
+      </div>
+      <div id="shadow-modal-retention-row">
+        <label for="shadow-modal-retention">хранить последних снапшотов</label>
+        <div class="number-input-wrap">
+          <input id="shadow-modal-retention" type="number" min="1" max="9999" value="7">
+          <div class="number-spinner">
+            <button type="button" class="spin-up" tabindex="-1" onclick="stepNumberInput('shadow-modal-retention', 1)">▲</button>
+            <button type="button" class="spin-down" tabindex="-1" onclick="stepNumberInput('shadow-modal-retention', -1)">▼</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button onclick="closeShadowModal()">[ отмена ]</button>
+        <button onclick="saveShadowModal()">[ сохранить ]</button>
       </div>
     </div>
   </div>
@@ -1482,6 +1558,31 @@ async function saveRecycleModal() {
   refreshShares();
 }
 
+let shadowModalState = { name: null };
+
+function editShadow(name, shadowOn, retentionCount) {
+  shadowModalState.name = name;
+  document.getElementById('shadow-modal-sharename').textContent = name;
+  document.getElementById('shadow-modal-enabled').checked = shadowOn;
+  document.getElementById('shadow-modal-retention').value = retentionCount || 7;
+  document.getElementById('shadow-modal-retention-row').style.display = shadowOn ? 'block' : 'none';
+  document.getElementById('shadow-modal-overlay').style.display = 'flex';
+}
+
+function closeShadowModal() {
+  document.getElementById('shadow-modal-overlay').style.display = 'none';
+}
+
+async function saveShadowModal() {
+  const name = shadowModalState.name;
+  const shadow = document.getElementById('shadow-modal-enabled').checked;
+  const retention_count = parseInt(document.getElementById('shadow-modal-retention').value, 10) || 7;
+  const data = await post('/api/set_share_shadow', {name, shadow, retention_count});
+  renderOutput('set_share_shadow ' + name + ' ' + shadow + ' ' + retention_count, data);
+  closeShadowModal();
+  refreshShares();
+}
+
 let quotaModalState = { name: null, currentEnforced: false };
 
 async function editQuota(name, quotaBytes, currentEnforced) {
@@ -1664,8 +1765,17 @@ async function removeShare(name) {
 }
 
 async function refreshShares() {
-  const res = await fetch('/api/list_shares');
+  const [res, shadowRes] = await Promise.all([
+    fetch('/api/list_shares'),
+    fetch('/api/get_shadow_config'),
+  ]);
   const data = await res.json();
+  const shadowData = await shadowRes.json();
+  const shadowByShare = {};
+  (shadowData.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('SHADOWSHARE|')).forEach(line => {
+    const [, sName, sRetention, sCount] = line.split('|');
+    shadowByShare[sName] = { retention: parseInt(sRetention, 10) || 7, count: parseInt(sCount, 10) || 0 };
+  });
   const body = document.getElementById('sharelist-body');
   const lines = (data.output || '').split('\n').map(l => l.trim()).filter(l => l.startsWith('SHARE|'));
   if (lines.length === 0) {
@@ -1709,6 +1819,10 @@ async function refreshShares() {
         : ' · бэкап: включён, ещё не запускался';
     }
     const auditLabel = auditOn ? ' · полный аудит: вкл' : '';
+    const shadowInfo = shadowByShare[name];
+    const shadowOn = !!shadowInfo;
+    const shadowRetention = shadowInfo ? shadowInfo.retention : 7;
+    const shadowLabel = shadowOn ? ` · теневые копии: вкл (снапшотов: ${shadowInfo.count}, хранить: ${shadowInfo.retention})` : '';
     let groupLabel;
     if (group === 'GUEST') {
       groupLabel = '⚠ ГОСТЕВОЙ ДОСТУП (без пароля)';
@@ -1725,7 +1839,7 @@ async function refreshShares() {
     div.dataset.filterName = name.toLowerCase();
     div.innerHTML = `
       <span class="${status.includes('ПАПКА') ? 'badge-off' : 'badge-on'}">
-        ● ${name} <span style="color:var(--fg-dim)">${path} · ${escapeHtml(groupLabel)} · ${status}${restrictedIp ? ' · доступ: ' + hosts : ''}${restrictedVeto ? ' · запрещены: ' + veto : ''}${recycleLabel}${avLabel}${quotaLabel}${backupLabel}${auditLabel}</span>
+        ● ${name} <span style="color:var(--fg-dim)">${path} · ${escapeHtml(groupLabel)} · ${status}${restrictedIp ? ' · доступ: ' + hosts : ''}${restrictedVeto ? ' · запрещены: ' + veto : ''}${recycleLabel}${avLabel}${quotaLabel}${backupLabel}${auditLabel}${shadowLabel}</span>
       </span>
       <span class="actions">
         <button onclick="toggleWritable('${name}', ${!isWritable})">${isWritable ? 'read-only' : 'разрешить запись'}</button>
@@ -1739,6 +1853,7 @@ async function refreshShares() {
         ${avOn && qCount > 0 ? `<button class="danger" onclick="emptyQuarantine('${name}', ${qCount})">очистить карантин (${qCount})</button>` : ''}
         <button onclick="editQuota('${name}', ${quota}, ${enforcedOn})">${quota > 0 ? 'изменить квоту' : 'задать квоту'}</button>
         <button onclick="toggleBackup('${name}', ${!backupOn})">${backupOn ? 'выключить бэкап' : 'включить бэкап'}</button>
+        <button onclick="editShadow('${name}', ${shadowOn}, ${shadowRetention})">${shadowOn ? 'настройки теневых копий' : 'включить теневые копии'}</button>
         <button onclick="toggleFullAudit('${name}', ${!auditOn})">${auditOn ? 'выключить полный аудит' : 'включить полный аудит'}</button>
         <button class="danger" onclick="removeShare('${name}')">убрать шару</button>
       </span>`;
@@ -1932,6 +2047,34 @@ async function checkForUpdate() {
       </div>
     `;
   }
+}
+
+const UPDATE_DISMISS_KEY = 'sap_dismissed_update_tag';
+
+async function checkForUpdateBanner() {
+  try {
+    const res = await fetch('/api/check_update');
+    const data = await res.json();
+    const line = (data.output || '').split('\n').find(l => l.trim().startsWith('UPDATECHECK|'));
+    if (!line) return;
+    const [, status, , latest, extra] = line.trim().split('|');
+    if (status !== 'available' || !latest) return;
+    if (localStorage.getItem(UPDATE_DISMISS_KEY) === latest) return;
+    document.getElementById('update-banner-text').innerHTML =
+      `Доступно обновление панели: <b>${escapeHtml(latest)}</b>` +
+      (extra ? ` (<a href="${escapeHtml(extra)}" target="_blank" rel="noopener">что нового</a>)` : '');
+    document.getElementById('update-banner').dataset.tag = latest;
+    document.getElementById('update-banner').style.display = 'flex';
+  } catch (e) {
+    // тихо игнорируем — это фоновая проверка, не должна мешать работе панели
+  }
+}
+
+function dismissUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  const tag = banner.dataset.tag;
+  if (tag) localStorage.setItem(UPDATE_DISMISS_KEY, tag);
+  banner.style.display = 'none';
 }
 
 let updateLogPollTimer = null;
@@ -2548,6 +2691,60 @@ async function saveBackupSchedule() {
   if (data.ok) refreshBackupConfig();
 }
 
+async function refreshShadowConfig() {
+  const statusBox = document.getElementById('shadow-config-status');
+  const sharesBox = document.getElementById('shadow-shares-list');
+  statusBox.innerHTML = '<p class="badge-off">загрузка...</p>';
+  sharesBox.innerHTML = '';
+
+  const res = await fetch('/api/get_shadow_config');
+  const data = await res.json();
+  if (!data.ok) {
+    statusBox.innerHTML = `<p class="line-fail">${escapeHtml(data.output || 'ошибка')}</p>`;
+    return;
+  }
+
+  const lines = (data.output || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const confLine = lines.find(l => l.startsWith('SHADOWCONF|'));
+  const shareLines = lines.filter(l => l.startsWith('SHADOWSHARE|'));
+
+  if (confLine) {
+    const parts = confLine.split('|');
+    let interval = '';
+    try { interval = parts[1] ? b64DecodeUtf8(parts[1]) : ''; } catch (e) { interval = ''; }
+    statusBox.innerHTML = `<p class="badge-on">✔ интервал снапшотов: ${escapeHtml(interval || 'неизвестно')}</p>`;
+  }
+
+  if (shareLines.length === 0) {
+    sharesBox.innerHTML = '<p class="badge-off">ни у одной шары не включены теневые копии (см. вкладку «Шары и пользователи»)</p>';
+    return;
+  }
+
+  let html = '<p class="modal-sub" style="margin:0 0 6px;">Шары с включёнными теневыми копиями:</p>';
+  shareLines.forEach(line => {
+    const [, name, retention, count] = line.split('|');
+    html += `<div class="disk-row row-in"><span class="badge-on">${escapeHtml(name)}</span> <span style="color:var(--fg-dim); font-size:12px;">— снапшотов: ${escapeHtml(count)}, хранить последних: ${escapeHtml(retention)}</span></div>`;
+  });
+  sharesBox.innerHTML = html;
+}
+
+async function saveShadowSchedule() {
+  const interval_hours = parseInt(document.getElementById('shadow-interval-input').value, 10) || 1;
+  const data = await post('/api/set_shadow_schedule', {interval_hours});
+  renderOutput('set_shadow_schedule ' + interval_hours, data);
+  if (data.ok) refreshShadowConfig();
+}
+
+async function runShadowSnapshotsNow() {
+  if (!confirm('Запустить снапшот всех шар с включённым флагом прямо сейчас (не дожидаясь расписания)?')) return;
+  const box = document.getElementById('shadow-run-output');
+  box.style.display = 'block';
+  box.textContent = 'запускаю...';
+  const data = await post('/api/run_shadow_snapshots_now', {});
+  box.textContent = data.output || '(пусто)';
+  if (data.ok) refreshShadowConfig();
+}
+
 async function refreshBackupFiles() {
   const box = document.getElementById('backup-files-list');
   box.innerHTML = '<p class="badge-off">загрузка...</p>';
@@ -3110,6 +3307,7 @@ function showTab(tabName) {
 
   if (tabName === 'disks') {
     refreshBackupConfig();
+    refreshShadowConfig();
   }
 
   if (tabName === 'updates') {
@@ -3159,6 +3357,7 @@ document.addEventListener('visibilitychange', () => {
 
 refreshUsers();
 refreshShares();
+checkForUpdateBanner();
 </script>
 </body>
 </html>

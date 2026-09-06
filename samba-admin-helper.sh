@@ -40,6 +40,8 @@ FORBIDDEN_PATHS="/ /etc /root /boot /bin /sbin /usr /var /home /proc /sys /dev /
 
 SHARES_DB="/etc/sambapanel/shares.db"
 PANEL_CONF="/etc/samba/panel-shares.conf"
+SHADOW_CONF="/etc/sambapanel/shadow.conf"
+SHADOW_DB="/etc/sambapanel/shadow_shares.db"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -396,6 +398,12 @@ regenerate_conf() {
             [[ "$s_audit" == "yes" ]] && vfs_list="full_audit"
             [[ "$s_av" == "yes" ]] && vfs_list="${vfs_list:+$vfs_list }virusfilter"
             [[ "$s_recycle" == "yes" ]] && vfs_list="${vfs_list:+$vfs_list }recycle"
+            s_shadow_retention=""
+            if [[ -f "$SHADOW_DB" ]]; then
+                shadow_line="$(grep "^${s_name}|" "$SHADOW_DB" 2>/dev/null || true)"
+                [[ -n "$shadow_line" ]] && s_shadow_retention="${shadow_line#*|}"
+            fi
+            [[ -n "$s_shadow_retention" ]] && vfs_list="${vfs_list:+$vfs_list }shadow_copy2"
             if [[ -n "$vfs_list" ]]; then
                 echo "   vfs objects = $vfs_list"
             fi
@@ -435,6 +443,16 @@ regenerate_conf() {
                 echo "   recycle:touch = yes"
                 echo "   recycle:directory_mode = 0775"
                 echo "   recycle:subdir_mode = 0775"
+            fi
+            if [[ -n "$s_shadow_retention" ]]; then
+                # Точки монтирования "предыдущих версий" — не настоящий ZFS/Btrfs
+                # снапшот (см. create_shadow_snapshot), а дерево хардлинков внутри
+                # самой шары под .snapshots/@GMT-*. Клиенту Windows это неотличимо
+                # от настоящего VSS — работает "Восстановить предыдущую версию".
+                echo "   shadow:snapdir = .snapshots"
+                echo "   shadow:basedir = $s_path"
+                echo "   shadow:format = @GMT-%Y.%m.%d-%H.%M.%S"
+                echo "   shadow:sort = desc"
             fi
             echo
         done < "$SHARES_DB"
@@ -1055,6 +1073,42 @@ case "$cmd" in
     fi
     ;;
 
+  set_share_shadow)
+    # Использование: set_share_shadow <name> <yes|no> [retention_count]
+    # "Теневые копии" — не настоящий ZFS/Btrfs-снапшот файловой системы (шары
+    # лежат на обычном ext4), а дерево хардлинков внутри самой шары
+    # (.snapshots/@GMT-*), которое Samba (vfs shadow_copy2) показывает
+    # Windows-клиенту как обычные Volume Shadow Copies — "Восстановить
+    # предыдущую версию" в свойствах файла работает как ожидается.
+    name="${2:-}"; shadow_raw="${3:-no}"; retention_raw="${4:-7}"
+    validate_share_name "$name"
+    shadow_enabled="$(validate_backup "$shadow_raw")"
+    retention="$(validate_retention_days "$retention_raw")"
+    [[ "$retention" == "0" ]] && retention="7"
+
+    ensure_db
+    if ! grep -q "^${name}|" "$SHARES_DB" 2>/dev/null; then
+        echo "ERROR: шара '$name' не найдена" >&2
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$SHADOW_DB")"
+    touch "$SHADOW_DB"
+    grep -v "^${name}|" "$SHADOW_DB" > "$SHADOW_DB.tmp" 2>/dev/null || true
+    if [[ "$shadow_enabled" == "yes" ]]; then
+        echo "${name}|${retention}" >> "$SHADOW_DB.tmp"
+    fi
+    mv "$SHADOW_DB.tmp" "$SHADOW_DB"
+
+    regenerate_conf
+
+    if [[ "$shadow_enabled" == "yes" ]]; then
+        log "OK: шара '$name' — теневые копии включены, хранить последних: $retention (первый снапшот создастся при следующем запуске по расписанию или через run_shadow_snapshots_all)"
+    else
+        log "OK: шара '$name' — теневые копии выключены (уже созданные снапшоты в .snapshots остаются на месте, новые создаваться не будут; удали папку .snapshots руками, если она больше не нужна)"
+    fi
+    ;;
+
   empty_recycle_bin)
     # Использование: empty_recycle_bin <name>
     # Безвозвратно удаляет ВСЁ содержимое .recycle для этой шары.
@@ -1485,6 +1539,94 @@ case "$cmd" in
     fi
     log "OK: бэкап запущен и завершён, смотри журнал ниже"
     journalctl -u samba-backup.service -n 30 --no-pager 2>/dev/null || true
+    ;;
+
+  get_shadow_config)
+    # Только чтение — список шар с включёнными теневыми копиями + их
+    # retention, плюс текущий интервал снапшотов из самого таймера.
+    interval_desc="неизвестно"
+    if [[ -f /etc/systemd/system/samba-shadow.timer ]]; then
+        interval_desc="$(grep '^OnCalendar=' /etc/systemd/system/samba-shadow.timer | head -1 | cut -d= -f2-)"
+    fi
+    interval_b64="$(printf '%s' "$interval_desc" | base64 -w0)"
+    echo "SHADOWCONF|${interval_b64}"
+    if [[ -f "$SHADOW_DB" ]]; then
+        while IFS='|' read -r s_name s_retention; do
+            [[ -z "$s_name" ]] && continue
+            snap_count=0
+            s_path="$(grep "^${s_name}|" "$SHARES_DB" 2>/dev/null | head -1 | cut -d'|' -f2)"
+            if [[ -n "$s_path" && -d "${s_path}/.snapshots" ]]; then
+                snap_count="$(find "${s_path}/.snapshots" -maxdepth 1 -type d -name '@GMT-*' 2>/dev/null | wc -l)"
+            fi
+            echo "SHADOWSHARE|${s_name}|${s_retention:-7}|${snap_count}"
+        done < "$SHADOW_DB"
+    fi
+    ;;
+
+  set_shadow_schedule)
+    # Использование: set_shadow_schedule <interval_hours>
+    # Как часто делать снапшоты. 1 = каждый час (максимальная детализация
+    # истории, больше места на диске), 24 = раз в сутки (как обычный бэкап).
+    interval_raw="${2:-1}"
+    if [[ ! "$interval_raw" =~ ^[0-9]{1,3}$ ]] || [[ "$interval_raw" -lt 1 ]] || [[ "$interval_raw" -gt 168 ]]; then
+        echo "ERROR: интервал должен быть целым числом часов от 1 до 168 (неделя)" >&2
+        exit 1
+    fi
+
+    timer_file="/etc/systemd/system/samba-shadow.timer"
+    if [[ ! -f "$timer_file" ]]; then
+        echo "ERROR: $timer_file не найден — панель установлена не полностью, переустанови через install.sh" >&2
+        exit 1
+    fi
+
+    if [[ "$interval_raw" == "1" ]]; then
+        new_calendar="hourly"
+    else
+        new_calendar="*-*-* 0/${interval_raw}:00:00"
+    fi
+    sed -i "s/^OnCalendar=.*/OnCalendar=${new_calendar}/" "$timer_file"
+    systemctl daemon-reload
+    systemctl restart samba-shadow.timer
+
+    log "OK: интервал теневых копий изменён — каждые ${interval_raw} ч. (±5 мин случайной задержки)"
+    ;;
+
+  list_shadow_snapshots)
+    # Использование: list_shadow_snapshots <share_name>
+    # Только чтение — список существующих снапшотов конкретной шары
+    # (для просмотра/ручного восстановления файла через панель, не только
+    # через "Предыдущие версии" в Windows).
+    name="${2:-}"
+    validate_share_name "$name"
+    path="$(grep "^${name}|" "$SHARES_DB" 2>/dev/null | head -1 | cut -d'|' -f2)"
+    if [[ -z "$path" ]]; then
+        echo "ERROR: шара '$name' не найдена" >&2
+        exit 1
+    fi
+    snap_root="${path}/.snapshots"
+    if [[ ! -d "$snap_root" ]]; then
+        exit 0
+    fi
+    find "$snap_root" -maxdepth 1 -type d -name '@GMT-*' -printf '%f\n' 2>/dev/null | sort -r | while read -r snap; do
+        size="$(du -sh "${snap_root}/${snap}" 2>/dev/null | cut -f1)"
+        echo "SNAPSHOT|${snap}|${size:-?}"
+    done
+    ;;
+
+  run_shadow_snapshots_now)
+    # Запускает снапшоты немедленно для всех шар с включёнными теневыми
+    # копиями, не дожидаясь таймера — тот же сервис, что срабатывает по
+    # расписанию.
+    if [[ ! -f "$SHADOW_DB" || ! -s "$SHADOW_DB" ]]; then
+        echo "ERROR: ни у одной шары не включены теневые копии" >&2
+        exit 1
+    fi
+    if ! systemctl start samba-shadow.service; then
+        echo "ERROR: не удалось запустить samba-shadow.service — смотри journalctl -u samba-shadow" >&2
+        exit 1
+    fi
+    log "OK: снапшоты запущены и завершены, смотри журнал ниже"
+    journalctl -u samba-shadow.service -n 30 --no-pager 2>/dev/null || true
     ;;
 
   list_block_devices)

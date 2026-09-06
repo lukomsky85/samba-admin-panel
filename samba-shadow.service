@@ -1,0 +1,6 @@
+[Unit]
+Description=Теневые копии Samba-шар (samba-admin panel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/samba-shadow.sh

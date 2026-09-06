@@ -791,6 +791,66 @@ def api_list_backup_files():
     return jsonify(ok=ok, output=output)
 
 
+@app.route("/api/get_shadow_config")
+@login_required
+def api_get_shadow_config():
+    ok, output = run_helper(["get_shadow_config"])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_share_shadow", methods=["POST"])
+@login_required
+def api_set_share_shadow():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    shadow = validate_backup_flag(data.get("shadow", False))
+    retention = data.get("retention_count", 7)
+
+    if not SHARENAME_RE.match(name):
+        return jsonify(ok=False, output="ERROR: недопустимое имя шары")
+    try:
+        retention_int = int(retention)
+        if retention_int < 1:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify(ok=False, output="ERROR: количество хранимых снапшотов должно быть целым числом не меньше 1")
+
+    ok, output = run_helper(["set_share_shadow", name, shadow, str(retention_int)])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/set_shadow_schedule", methods=["POST"])
+@login_required
+def api_set_shadow_schedule():
+    data = request.get_json(force=True)
+    interval = data.get("interval_hours", 1)
+    try:
+        interval_int = int(interval)
+        if interval_int < 1 or interval_int > 168:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify(ok=False, output="ERROR: интервал должен быть целым числом часов от 1 до 168")
+    ok, output = run_helper(["set_shadow_schedule", str(interval_int)])
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/run_shadow_snapshots_now", methods=["POST"])
+@login_required
+def api_run_shadow_snapshots_now():
+    ok, output = run_helper(["run_shadow_snapshots_now"], timeout=300)
+    return jsonify(ok=ok, output=output)
+
+
+@app.route("/api/list_shadow_snapshots")
+@login_required
+def api_list_shadow_snapshots():
+    name = (request.args.get("name") or "").strip()
+    if not SHARENAME_RE.match(name):
+        return jsonify(ok=False, output="ERROR: недопустимое имя шары")
+    ok, output = run_helper(["list_shadow_snapshots", name])
+    return jsonify(ok=ok, output=output)
+
+
 def _read_backup_dest():
     """Читает BACKUP_DEST напрямую из backup.conf (файл 644, читаемый без
     привилегий) — не нужен лишний вызов привилегированного хелпера просто

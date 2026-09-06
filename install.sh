@@ -39,7 +39,7 @@ if ! command -v apt &>/dev/null; then
     fail "этот установщик рассчитан на Ubuntu/Debian (apt не найден)"
 fi
 
-for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh logrotate-sambapanel.conf logrotate-full-audit.conf samba-panel-monitor.sh samba-panel-monitor.service samba-panel-monitor.timer; do
+for f in app.py samba-admin-helper.sh templates/index.html templates/login.html sambapanel.service samba-recycle-cleanup.sh samba-recycle-cleanup.service samba-recycle-cleanup.timer samba-backup.sh samba-backup.service samba-backup.timer samba-restore.sh samba-shadow.sh samba-shadow.service samba-shadow.timer logrotate-sambapanel.conf logrotate-full-audit.conf samba-panel-monitor.sh samba-panel-monitor.service samba-panel-monitor.timer; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "не найден файл '$f' — запускай install.sh из корня проекта"
 done
 
@@ -239,6 +239,15 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now samba-backup.timer 2>/dev/null || true
+
+step "устанавливаю движок теневых копий (shadow_copy2)"
+install -m 750 -o root -g root "$SCRIPT_DIR/samba-shadow.sh" /usr/local/sbin/samba-shadow.sh
+install -m 644 -o root -g root "$SCRIPT_DIR/samba-shadow.service" /etc/systemd/system/samba-shadow.service
+install -m 644 -o root -g root "$SCRIPT_DIR/samba-shadow.timer" /etc/systemd/system/samba-shadow.timer
+touch /etc/sambapanel/shadow_shares.db
+systemctl daemon-reload
+systemctl enable --now samba-shadow.timer 2>/dev/null || true
+step "теневые копии установлены (по умолчанию выключены на всех шарах, интервал снапшотов 1ч — включаются отдельно на каждой шаре в панели)"
 
 step "прописываю sudoers-правило ($SUDOERS_DST)"
 echo "${PANEL_USER} ALL=(root) NOPASSWD: ${HELPER_DST} *" > "$SUDOERS_DST"
@@ -555,7 +564,7 @@ else
 fi
 
 # Подключаем OnFailure= к нашим собственным юнитам напрямую...
-for unit in sambapanel.service samba-backup.service samba-recycle-cleanup.service; do
+for unit in sambapanel.service samba-backup.service samba-recycle-cleanup.service samba-shadow.service; do
     unit_path="/etc/systemd/system/${unit}"
     if [[ -f "$unit_path" ]] && ! grep -q "OnFailure=" "$unit_path"; then
         sed -i "/^\[Unit\]/a OnFailure=samba-notify@%n.service" "$unit_path"
@@ -574,7 +583,7 @@ EOF
 done
 
 systemctl daemon-reload
-step "уведомления подключены к: sambapanel, samba-backup, samba-recycle-cleanup, smbd, clamav-daemon, nginx"
+step "уведомления подключены к: sambapanel, samba-backup, samba-recycle-cleanup, samba-shadow, smbd, clamav-daemon, nginx"
 
 # ---------------------------------------------------------------------------
 # Готово

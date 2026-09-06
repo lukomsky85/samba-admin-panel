@@ -1,0 +1,30 @@
+name: Тесты
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить зависимости
+        # Версии закреплены и совпадают с install.sh — раз в проде панель
+        # ставит именно эти версии, тесты должны прогоняться на них же, а
+        # не на "что угодно текущее", иначе CI мог бы быть зелёным при
+        # реально другом поведении на сервере.
+        run: |
+          python -m pip install --upgrade pip
+          pip install "flask==3.1.3" "flask-wtf==1.3.0" "gunicorn==26.0.0"
+          pip install -r requirements-dev.txt
+
+      - name: Прогнать тесты
+        run: python -m pytest tests/ -v
